@@ -1,6 +1,6 @@
 {
   "manifest_version": 3,
-  "name": "Apexcrypt",
+  "name": "Shop Sentinel",
   "version": "1.0.0",
   "description": "A powerful Chrome Extension built with React, Vite, and TailwindCSS",
   "action": {

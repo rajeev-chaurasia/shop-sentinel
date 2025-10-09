@@ -1,5 +1,5 @@
-// Content script for Apexcrypt
-console.log('Apexcrypt content script loaded');
+// Content script for Shop Sentinel
+console.log('Shop Sentinel content script loaded');
 
 // Example: Listen for messages from the popup or background script
 chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
@@ -17,7 +17,7 @@ chrome.runtime.onMessage.addListener((request, _sender, sendResponse) => {
 
 // Example: Add functionality to interact with the page
 function initializeContentScript() {
-  console.log('Initializing Apexcrypt content script on:', window.location.href);
+  console.log('Initializing Shop Sentinel content script on:', window.location.href);
   
   // Add your content script logic here
   // For example: DOM manipulation, event listeners, etc.
