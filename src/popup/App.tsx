@@ -7,7 +7,7 @@ function App() {
     <div className="min-h-screen bg-gradient-to-br from-blue-500 to-purple-600 p-6">
       <div className="bg-white rounded-lg shadow-xl p-6">
         <h1 className="text-3xl font-bold text-gray-800 mb-4">
-          Welcome to Apexcrypt
+          Welcome to Apex Radar
         </h1>
         <p className="text-gray-600 mb-6">
           A powerful Chrome Extension built with React, Vite, and TailwindCSS

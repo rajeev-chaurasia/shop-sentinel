@@ -1,4 +1,4 @@
-# Apexcrypt
+# Apex Radar
 
 A powerful Chrome Extension built with modern web technologies to provide a seamless browser extension experience.
 
@@ -24,7 +24,7 @@ A powerful Chrome Extension built with modern web technologies to provide a seam
 ## Project Structure
 
 ```
-apexcrypt/
+apex-radar/
 ├── src/
 │   ├── popup/           # Extension popup UI
 │   │   ├── index.html   # Popup HTML entry point
