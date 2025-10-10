@@ -5,6 +5,7 @@ interface RiskMeterProps {
   level: RiskSeverity;
   size?: 'small' | 'medium' | 'large';
   showLabel?: boolean;
+  animated?: boolean;
   className?: string;
 }
 
@@ -13,30 +14,39 @@ export function RiskMeter({
   level, 
   size = 'medium', 
   showLabel = true,
+  animated = true,
   className = '' 
 }: RiskMeterProps) {
   const sizeClasses = {
-    small: 'w-16 h-16',
-    medium: 'w-24 h-24',
-    large: 'w-32 h-32',
+    small: 'w-20 h-20',
+    medium: 'w-28 h-28',
+    large: 'w-40 h-40',
   };
 
   const textSizeClasses = {
-    small: 'text-lg',
-    medium: 'text-2xl',
-    large: 'text-4xl',
+    small: 'text-xl',
+    medium: 'text-3xl',
+    large: 'text-5xl',
   };
 
   const labelSizeClasses = {
     small: 'text-xs',
     medium: 'text-sm',
-    large: 'text-base',
+    large: 'text-lg',
+  };
+
+  const strokeWidths = {
+    small: 6,
+    medium: 8,
+    large: 10,
   };
 
   const color = getRiskColor(level);
   const percentage = Math.min(100, Math.max(0, score));
-  const circumference = 2 * Math.PI * 45;
+  const radius = 45;
+  const circumference = 2 * Math.PI * radius;
   const strokeDashoffset = circumference - (percentage / 100) * circumference;
+  const strokeWidth = strokeWidths[size];
 
   const levelEmoji = {
     safe: '✅',
@@ -54,50 +64,79 @@ export function RiskMeter({
     critical: 'Critical',
   };
 
+  const bgColors = {
+    safe: 'bg-green-50',
+    low: 'bg-yellow-50',
+    medium: 'bg-orange-50',
+    high: 'bg-red-50',
+    critical: 'bg-red-100',
+  };
+
   return (
-    <div className={`flex flex-col items-center ${className}`}>
-      <div className={`relative ${sizeClasses[size]}`}>
-        {/* Background circle */}
-        <svg className="transform -rotate-90" viewBox="0 0 100 100">
+    <div className={`flex flex-col items-center justify-center ${className}`}>
+      {/* Circular Progress */}
+      <div className={`relative ${sizeClasses[size]} flex items-center justify-center`}>
+        {/* Background glow effect */}
+        <div 
+          className={`absolute inset-0 ${bgColors[level]} rounded-full opacity-30 blur-md`}
+        />
+        
+        {/* SVG Circle */}
+        <svg 
+          className="transform -rotate-90 relative z-10" 
+          viewBox="0 0 100 100"
+          style={{ filter: 'drop-shadow(0 4px 6px rgba(0,0,0,0.1))' }}
+        >
+          {/* Background circle */}
           <circle
             cx="50"
             cy="50"
-            r="45"
+            r={radius}
             stroke="#e5e7eb"
-            strokeWidth="8"
-            fill="none"
+            strokeWidth={strokeWidth}
+            fill="white"
           />
           {/* Progress circle */}
           <circle
             cx="50"
             cy="50"
-            r="45"
+            r={radius}
             stroke={color}
-            strokeWidth="8"
+            strokeWidth={strokeWidth}
             fill="none"
             strokeDasharray={circumference}
-            strokeDashoffset={strokeDashoffset}
+            strokeDashoffset={animated ? strokeDashoffset : 0}
             strokeLinecap="round"
-            style={{ transition: 'stroke-dashoffset 0.5s ease-in-out' }}
+            style={{ 
+              transition: animated ? 'stroke-dashoffset 1.5s cubic-bezier(0.4, 0, 0.2, 1)' : 'none',
+            }}
           />
         </svg>
         
-        {/* Score text */}
-        <div className="absolute inset-0 flex items-center justify-center">
-          <span className={`font-bold ${textSizeClasses[size]}`} style={{ color }}>
+        {/* Score text overlay */}
+        <div className="absolute inset-0 flex flex-col items-center justify-center z-20">
+          <span 
+            className={`font-extrabold ${textSizeClasses[size]} leading-none`} 
+            style={{ color }}
+          >
             {score}
           </span>
+          <span className="text-xs text-gray-500 mt-1 font-semibold">/ 100</span>
         </div>
       </div>
 
       {/* Label */}
       {showLabel && (
-        <div className="mt-2 text-center">
-          <div className={`font-semibold ${labelSizeClasses[size]}`}>
-            {levelEmoji[level]} {levelText[level]}
+        <div className="mt-4 text-center space-y-1">
+          <div 
+            className={`font-extrabold ${labelSizeClasses[size]} flex items-center justify-center gap-2`}
+            style={{ color }}
+          >
+            <span className="text-2xl">{levelEmoji[level]}</span>
+            <span>{levelText[level]}</span>
           </div>
-          <div className={`text-gray-500 ${labelSizeClasses[size]}`}>
-            Risk Score
+          <div className={`text-gray-500 ${labelSizeClasses[size]} font-semibold uppercase tracking-wide`}>
+            Risk Assessment
           </div>
         </div>
       )}

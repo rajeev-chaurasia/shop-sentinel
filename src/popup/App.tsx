@@ -18,18 +18,13 @@ function App() {
     setError,
   } = useAnalysisStore();
 
-  // Test connectivity on mount
   useEffect(() => {
     testConnection();
   }, []);
 
-  /**
-   * Test if content script is ready
-   */
   const testConnection = async () => {
     try {
       const response = await MessagingService.sendToActiveTab('PING');
-      
       if (response.success) {
         console.log('✅ Connection successful:', response.data);
       }
@@ -38,22 +33,16 @@ function App() {
     }
   };
 
-  /**
-   * Run analysis
-   */
   const handleAnalyze = async () => {
     try {
-      // Get current tab URL
       const tab = await MessagingService.getActiveTab();
       if (!tab?.url) {
         setError('No active tab found');
         return;
       }
 
-      // Start analysis
       startAnalysis(tab.url);
 
-      // Request analysis from content script
       const response = await MessagingService.sendToActiveTab<any, AnalysisResult>(
         'ANALYZE_PAGE',
         { url: tab.url, includeAI: false }
@@ -71,165 +60,148 @@ function App() {
   };
 
   return (
-    <div className="w-[400px] min-h-[500px] bg-gradient-to-br from-blue-500 to-purple-600 p-4">
-      <div className="bg-white rounded-lg shadow-xl overflow-hidden">
-        {/* Header */}
-        <div className="bg-gradient-to-r from-blue-600 to-purple-600 p-4 text-white">
-          <h1 className="text-xl font-bold mb-1">
-            🛡️ Shop Sentinel
-          </h1>
-          <p className="text-xs opacity-90">
-            AI-Powered Shopping Safety
-          </p>
+    <div className="w-[420px] min-h-[600px] bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-700">
+      <div className="h-full flex flex-col bg-white">
+        <div className="bg-gradient-to-r from-blue-700 via-indigo-700 to-purple-800 px-5 py-4 text-white shadow-xl">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-3">
+              <div className="w-12 h-12 bg-white bg-opacity-25 rounded-full flex items-center justify-center backdrop-blur-sm shadow-lg border-2 border-white border-opacity-30">
+                <span className="text-3xl">🛡️</span>
+              </div>
+              <div>
+                <h1 className="text-xl font-black leading-tight tracking-tight">Shop Sentinel</h1>
+                <p className="text-xs opacity-95 font-semibold">AI-Powered Shopping Safety</p>
+              </div>
+            </div>
+            <div className="w-9 h-9 bg-white bg-opacity-25 rounded-full flex items-center justify-center backdrop-blur-sm shadow-lg border-2 border-white border-opacity-30">
+              <span className="text-xl">⚡</span>
+            </div>
+          </div>
         </div>
 
-        <div className="p-4">
-          {/* Error Display */}
+        <div className="flex-1 flex flex-col overflow-hidden">
           {error && (
-            <div className="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-              <p className="text-sm text-red-800">❌ {error}</p>
+            <div className="mx-4 mt-4 animate-slideUp">
+              <div className="bg-red-50 border-2 border-red-300 rounded-xl p-3 shadow-sm">
+                <div className="flex items-start gap-2">
+                  <span className="text-xl flex-shrink-0">❌</span>
+                  <p className="text-sm text-red-800 font-medium flex-1">{error}</p>
+                </div>
+              </div>
             </div>
           )}
 
-          {/* Analysis Button */}
           {!analysisResult && (
-            <button
-              onClick={handleAnalyze}
-              disabled={isLoading}
-              className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 text-white font-bold py-3 px-4 rounded-lg transition duration-200 shadow-md"
-            >
-              {isLoading ? '� Analyzing...' : '🔍 Analyze This Page'}
-            </button>
-          )}
-
-          {/* Analysis Results */}
-          {analysisResult && (
-            <>
-              {/* Tab Navigation */}
-              <div className="flex gap-1 mb-4 bg-gray-100 rounded-lg p-1">
-                <button
-                  onClick={() => setActiveTab('overview')}
-                  className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition ${
-                    activeTab === 'overview'
-                      ? 'bg-white text-blue-600 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  Overview
-                </button>
-                <button
-                  onClick={() => setActiveTab('reasons')}
-                  className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition ${
-                    activeTab === 'reasons'
-                      ? 'bg-white text-blue-600 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  Issues ({analysisResult.allSignals.length})
-                </button>
-                <button
-                  onClick={() => setActiveTab('policies')}
-                  className={`flex-1 py-2 px-3 rounded-md text-sm font-medium transition ${
-                    activeTab === 'policies'
-                      ? 'bg-white text-blue-600 shadow-sm'
-                      : 'text-gray-600 hover:text-gray-900'
-                  }`}
-                >
-                  Policies
+            <div className="flex-1 flex items-center justify-center p-6">
+              <div className="text-center space-y-4 animate-scaleIn">
+                <div className="w-24 h-24 mx-auto bg-gradient-to-br from-blue-100 to-purple-100 rounded-full flex items-center justify-center shadow-lg">
+                  <span className="text-5xl">🔍</span>
+                </div>
+                <div className="space-y-2">
+                  <h2 className="text-lg font-bold text-gray-800">Ready to Analyze</h2>
+                  <p className="text-sm text-gray-600 max-w-xs mx-auto">
+                    Check this website for security issues, dark patterns, and policy concerns
+                  </p>
+                </div>
+                <button onClick={handleAnalyze} disabled={isLoading} className="w-full max-w-xs mx-auto bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-bold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:scale-105 disabled:transform-none disabled:opacity-50">
+                  {isLoading ? (
+                    <span className="flex items-center justify-center gap-2">
+                      <span className="animate-spin">⚙️</span>
+                      <span>Analyzing...</span>
+                    </span>
+                  ) : ('🔍 Analyze This Page')}
                 </button>
               </div>
+            </div>
+          )}
 
-              {/* Tab Content */}
-              <div className="max-h-[400px] overflow-y-auto">
+          {analysisResult && (
+            <div className="flex-1 flex flex-col">
+              <div className="px-4 pt-4 pb-2">
+                <div className="flex gap-1 bg-gray-100 rounded-xl p-1.5 shadow-inner">
+                  <button onClick={() => setActiveTab('overview')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 ${activeTab === 'overview' ? 'bg-white text-blue-600 shadow-md transform scale-105' : 'text-gray-600 hover:text-gray-900 hover:bg-white hover:bg-opacity-50'}`}>
+                    Overview
+                  </button>
+                  <button onClick={() => setActiveTab('reasons')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 relative ${activeTab === 'reasons' ? 'bg-white text-blue-600 shadow-md transform scale-105' : 'text-gray-600 hover:text-gray-900 hover:bg-white hover:bg-opacity-50'}`}>
+                    Issues
+                    {analysisResult.allSignals.length > 0 && (
+                      <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold ${activeTab === 'reasons' ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-700'}`}>
+                        {analysisResult.allSignals.length}
+                      </span>
+                    )}
+                  </button>
+                  <button onClick={() => setActiveTab('policies')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 ${activeTab === 'policies' ? 'bg-white text-blue-600 shadow-md transform scale-105' : 'text-gray-600 hover:text-gray-900 hover:bg-white hover:bg-opacity-50'}`}>
+                    Policies
+                  </button>
+                </div>
+              </div>
+
+              <div className="flex-1 overflow-y-auto scrollbar-thin px-4 pb-4">
                 {activeTab === 'overview' && (
-                  <div className="space-y-4">
-                    {/* Risk Meter */}
-                    <div className="flex justify-center py-4">
-                      <RiskMeter
-                        score={analysisResult.totalRiskScore}
-                        level={analysisResult.riskLevel}
-                        size="large"
-                      />
+                  <div className="space-y-4 animate-fadeIn">
+                    <div className="flex justify-center py-6 bg-gradient-to-br from-gray-50 to-blue-50 rounded-xl">
+                      <RiskMeter score={analysisResult.totalRiskScore} level={analysisResult.riskLevel} size="large" animated={true} />
                     </div>
-
-                    {/* Quick Stats */}
                     <div className="grid grid-cols-2 gap-3">
-                      <div className="bg-gray-50 rounded-lg p-3">
-                        <div className="text-xs text-gray-600 mb-1">HTTPS</div>
-                        <div className="font-semibold">
-                          {analysisResult.security.isHttps ? '✅ Secure' : '❌ Not Secure'}
+                      <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-4 border border-blue-200 shadow-sm">
+                        <div className="text-xs font-semibold text-blue-600 mb-1.5 uppercase tracking-wide">Security</div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-2xl">{analysisResult.security.isHttps ? '🔒' : '⚠️'}</span>
+                          <span className="font-bold text-gray-800">{analysisResult.security.isHttps ? 'HTTPS' : 'Not Secure'}</span>
                         </div>
                       </div>
-                      <div className="bg-gray-50 rounded-lg p-3">
-                        <div className="text-xs text-gray-600 mb-1">Issues</div>
-                        <div className="font-semibold">
-                          {analysisResult.allSignals.length} found
+                      <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl p-4 border border-purple-200 shadow-sm">
+                        <div className="text-xs font-semibold text-purple-600 mb-1.5 uppercase tracking-wide">Issues Found</div>
+                        <div className="flex items-center gap-2">
+                          <span className="text-2xl">{analysisResult.allSignals.length === 0 ? '✅' : '🚨'}</span>
+                          <span className="font-bold text-gray-800">{analysisResult.allSignals.length} detected</span>
                         </div>
                       </div>
                     </div>
-
-                    {/* Top Issues Preview */}
                     {analysisResult.allSignals.length > 0 && (
                       <div>
-                        <h3 className="text-sm font-semibold text-gray-800 mb-2">
-                          Top Issues
+                        <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
+                          <span className="text-lg">⚠️</span>Top Issues
                         </h3>
-                        <ReasonsList
-                          signals={analysisResult.allSignals}
-                          maxItems={3}
-                          showCategory={false}
-                        />
+                        <ReasonsList signals={analysisResult.allSignals} maxItems={2} showCategory={true} compact={true} />
+                        {analysisResult.allSignals.length > 2 && (
+                          <button onClick={() => setActiveTab('reasons')} className="w-full mt-3 py-2 px-4 bg-gradient-to-r from-orange-100 to-red-100 hover:from-orange-200 hover:to-red-200 border-2 border-orange-300 text-orange-900 font-semibold text-sm rounded-xl transition-all duration-200 shadow-sm hover:shadow">
+                            View All {analysisResult.allSignals.length} Issues →
+                          </button>
+                        )}
                       </div>
                     )}
-
-                    {/* Policies Preview */}
                     <div>
-                      <h3 className="text-sm font-semibold text-gray-800 mb-2">
-                        Policies
+                      <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
+                        <span className="text-lg">📄</span>Policies
                       </h3>
-                      <PolicySummary
-                        policies={analysisResult.policies}
-                        compact={true}
-                      />
+                      <PolicySummary policies={analysisResult.policies} compact={true} />
                     </div>
-
-                    {/* Re-analyze Button */}
-                    <button
-                      onClick={handleAnalyze}
-                      disabled={isLoading}
-                      className="w-full bg-gray-100 hover:bg-gray-200 text-gray-700 font-medium py-2 px-4 rounded-lg transition duration-200"
-                    >
-                      🔄 Re-analyze
+                    <button onClick={handleAnalyze} disabled={isLoading} className="w-full mt-2 py-3 px-4 bg-gradient-to-r from-gray-100 to-gray-200 hover:from-gray-200 hover:to-gray-300 disabled:from-gray-50 disabled:to-gray-100 border-2 border-gray-300 text-gray-700 font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed">
+                      {isLoading ? '🔄 Re-analyzing...' : '🔄 Re-analyze Page'}
                     </button>
                   </div>
                 )}
-
                 {activeTab === 'reasons' && (
-                  <div>
-                    <ReasonsList
-                      signals={analysisResult.allSignals}
-                      showCategory={true}
-                    />
+                  <div className="pt-2 animate-fadeIn">
+                    <ReasonsList signals={analysisResult.allSignals} showCategory={true} compact={false} />
                   </div>
                 )}
-
                 {activeTab === 'policies' && (
-                  <div>
-                    <PolicySummary
-                      policies={analysisResult.policies}
-                      compact={false}
-                    />
+                  <div className="pt-2 animate-fadeIn">
+                    <PolicySummary policies={analysisResult.policies} compact={false} />
                   </div>
                 )}
               </div>
-
-              {/* URL Footer */}
               {currentUrl && (
-                <div className="mt-4 pt-3 border-t text-xs text-gray-500 break-all">
-                  {new URL(currentUrl).hostname}
+                <div className="px-4 py-3 bg-gray-50 border-t border-gray-200">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-semibold text-gray-500">🌐</span>
+                    <span className="text-xs text-gray-600 truncate flex-1">{new URL(currentUrl).hostname}</span>
+                  </div>
                 </div>
               )}
-            </>
+            </div>
           )}
         </div>
       </div>
