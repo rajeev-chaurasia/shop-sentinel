@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "description": "A powerful Chrome Extension built with React, Vite, and TailwindCSS",
   "action": {
-    "default_popup": "src/popup/index.html",
+    "default_popup": "index.html",
     "default_icon": {
       "16": "icons/icon-16.png",
       "48": "icons/icon-48.png",
@@ -19,12 +19,13 @@
   "content_scripts": [
     {
       "matches": ["<all_urls>"],
-      "js": ["content/content.js"]
+      "js": ["content.js"]
     }
   ],
   "permissions": [
     "storage",
-    "activeTab"
+    "activeTab",
+    "scripting"
   ],
   "host_permissions": [
     "<all_urls>"
