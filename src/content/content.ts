@@ -27,7 +27,15 @@ async function handleAnalyzePage(payload: any) {
         isHttps: window.location.protocol === 'https:',
         hasMixedContent: false,
         hasValidCertificate: true,
-        signals: [],
+        signals: window.location.protocol !== 'https:' ? [{
+          id: 'sec-001',
+          score: 15,
+          reason: 'Website does not use HTTPS',
+          severity: 'medium' as const,
+          category: 'security' as const,
+          source: 'heuristic' as const,
+          details: 'Unencrypted connections can be intercepted by attackers',
+        }] : [],
       },
       domain: {
         domain: window.location.hostname,
@@ -42,16 +50,43 @@ async function handleAnalyzePage(payload: any) {
         hasPhysicalAddress: false,
         hasEmail: false,
         socialMediaLinks: [],
-        signals: [],
+        signals: [{
+          id: 'con-001',
+          score: 10,
+          reason: 'No contact information found',
+          severity: 'low' as const,
+          category: 'legitimacy' as const,
+          source: 'heuristic' as const,
+          details: 'Legitimate stores typically provide multiple contact methods',
+        }],
       },
       policies: {
-        hasReturnPolicy: false,
+        hasReturnPolicy: true,
         hasShippingPolicy: false,
-        hasRefundPolicy: false,
-        hasTermsOfService: false,
+        hasRefundPolicy: true,
+        hasTermsOfService: true,
         hasPrivacyPolicy: false,
-        policyUrls: {},
-        signals: [],
+        policyUrls: {
+          returns: '#returns',
+          refund: '#refund',
+          terms: '#terms',
+        },
+        signals: [{
+          id: 'pol-001',
+          score: 8,
+          reason: 'Missing shipping policy',
+          severity: 'low' as const,
+          category: 'policy' as const,
+          source: 'heuristic' as const,
+        }, {
+          id: 'pol-002',
+          score: 12,
+          reason: 'No privacy policy found',
+          severity: 'medium' as const,
+          category: 'policy' as const,
+          source: 'heuristic' as const,
+          details: 'Privacy policies are required by law in many jurisdictions',
+        }],
       },
       payment: {
         acceptedMethods: [],
@@ -59,12 +94,35 @@ async function handleAnalyzePage(payload: any) {
         hasIrreversibleOnly: false,
         signals: [],
       },
-      totalRiskScore: 15,
-      riskLevel: 'low' as const,
-      allSignals: [],
+      totalRiskScore: 0,
+      riskLevel: 'safe' as 'safe' | 'low' | 'medium' | 'high' | 'critical',
+      allSignals: [] as any[],
       analysisVersion: '1.0.0',
       isEcommerceSite: true,
     };
+    
+    // Collect all signals
+    const allSignals = [
+      ...mockAnalysis.security.signals,
+      ...mockAnalysis.domain.signals,
+      ...mockAnalysis.contact.signals,
+      ...mockAnalysis.policies.signals,
+      ...mockAnalysis.payment.signals,
+    ];
+    
+    // Calculate total risk score
+    const totalRiskScore = allSignals.reduce((sum, signal) => sum + signal.score, 0);
+    
+    // Determine risk level
+    let riskLevel: 'safe' | 'low' | 'medium' | 'high' | 'critical' = 'safe';
+    if (totalRiskScore >= 76) riskLevel = 'critical';
+    else if (totalRiskScore >= 51) riskLevel = 'high';
+    else if (totalRiskScore >= 26) riskLevel = 'medium';
+    else if (totalRiskScore >= 1) riskLevel = 'low';
+    
+    mockAnalysis.allSignals = allSignals;
+    mockAnalysis.totalRiskScore = totalRiskScore;
+    mockAnalysis.riskLevel = riskLevel;
     
     return mockAnalysis;
   } catch (error) {
