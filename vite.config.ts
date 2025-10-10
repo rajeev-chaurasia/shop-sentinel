@@ -1,26 +1,33 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { resolve } from 'path'
+import { resolve, dirname } from 'path'
+import { fileURLToPath } from 'url'
+import { contentScriptPlugin } from './vite-plugin-content-script.js'
 
-// https://vitejs.dev/config/
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = dirname(__filename)
+
 export default defineConfig({
-  plugins: [react()],
+  plugins: [react(), contentScriptPlugin()],
   build: {
     outDir: 'dist',
+    sourcemap: false,
+    emptyOutDir: true,
     rollupOptions: {
       input: {
         popup: resolve(__dirname, 'src/popup/index.html'),
-        content: resolve(__dirname, 'src/content/content.ts'),
       },
       output: {
-        entryFileNames: (chunkInfo) => {
-          return chunkInfo.name === 'content' 
-            ? 'content/[name].js' 
-            : 'popup/[name].js';
-        },
+        entryFileNames: '[name].js',
         chunkFileNames: 'chunks/[name]-[hash].js',
-        assetFileNames: 'assets/[name]-[hash].[ext]',
+        assetFileNames: 'assets/[name]-[hash][extname]',
       },
+    },
+  },
+  base: '',
+  resolve: {
+    alias: {
+      '@': resolve(__dirname, 'src'),
     },
   },
 })
