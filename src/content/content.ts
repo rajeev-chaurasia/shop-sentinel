@@ -298,7 +298,89 @@ async function handleAnalyzePage(payload: any) {
     const { security, domain, payment } = await runDomainSecurityChecks();
     const { contact, policies } = await runContentPolicyChecks();
     
-    // Collect all signals
+    const aiAvailable = await AIService.checkAvailability();
+    console.log(`🤖 AI Available: ${aiAvailable}`);
+    
+    let aiSignals: any[] = [];
+    let aiAnalysisTime = 0;
+    
+    const shouldRunAI = payload?.includeAI !== false && 
+                        aiAvailable && 
+                        pageType !== 'policy' &&
+                        pageType !== 'other';
+    
+    if (shouldRunAI) {
+      console.log(`🤖 Running AI-powered analysis for ${pageType} page...`);
+      const aiStartTime = performance.now();
+      
+      try {
+        // Initialize session first (will reuse if already exists)
+        const initialized = await AIService.initializeSession();
+        
+        if (!initialized) {
+          console.warn('⚠️ AI session failed to initialize, skipping AI analysis');
+          aiAnalysisTime = performance.now() - aiStartTime;
+        } else {
+          // Extract page content for AI analysis
+          const pageContent = {
+            url: window.location.href,
+            title: document.title,
+            pageType: pageType, // Pass string type for AI
+            confidence: pageTypeResult.confidence,
+            headings: Array.from(document.querySelectorAll('h1, h2, h3'))
+              .map(el => el.textContent?.trim() || '')
+              .filter(text => text.length > 0)
+              .slice(0, 10), // Limit to reduce token usage
+            buttons: Array.from(document.querySelectorAll('button, a.btn, input[type="submit"]'))
+              .map(el => el.textContent?.trim() || (el as HTMLInputElement).value || '')
+              .filter(text => text.length > 0)
+              .slice(0, 20), // Limit to reduce token usage
+            forms: Array.from(document.querySelectorAll('form'))
+              .map(form => form.id || form.className || 'form')
+              .filter(text => text.length > 0)
+              .slice(0, 5),
+          };
+          
+          const pageText = document.body.innerText || '';
+          
+          // Context-aware AI analysis based on page type
+          const analyses: Promise<any[]>[] = [];
+        
+          // Analyze dark patterns with page context
+          analyses.push(AIService.analyzeDarkPatterns(pageContent));
+          
+          // Legitimacy check only on pages where it matters
+          if (pageType === 'product' || pageType === 'checkout' || pageType === 'home') {
+            analyses.push(AIService.analyzeLegitimacy({
+              url: window.location.href,
+              title: document.title,
+              content: pageText.slice(0, 1500), // Reduced for efficiency
+              hasHTTPS: security.isHttps,
+              hasContactInfo: contact.hasContactPage || contact.hasEmail || contact.hasPhoneNumber,
+              hasPolicies: policies.hasReturnPolicy || policies.hasPrivacyPolicy,
+            }));
+          }
+          
+          // Run selected analyses in parallel
+          const results = await Promise.all(analyses);
+          aiSignals = results.flat();
+          
+          aiAnalysisTime = performance.now() - aiStartTime;
+          console.log(`✅ AI found ${aiSignals.length} signals in ${aiAnalysisTime.toFixed(0)}ms`);
+        }
+      } catch (aiError) {
+        aiAnalysisTime = performance.now() - aiStartTime;
+        console.error(`⚠️ AI analysis failed after ${aiAnalysisTime.toFixed(0)}ms:`, aiError);
+      }
+    } else {
+      const reason = !aiAvailable ? 'AI not available' : 
+                     pageType === 'policy' ? 'policy page' :
+                     pageType === 'other' ? 'unknown page type' :
+                     'AI disabled';
+      console.log(`⏭️ Skipping AI analysis: ${reason}`);
+    }
+    
+    // Collect all signals (heuristics + AI)
     const allSignals = [
       ...security.signals,
       ...domain.signals,
