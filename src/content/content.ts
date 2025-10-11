@@ -2,6 +2,7 @@ import { createMessageHandler } from '../services/messaging';
 import { runDomainSecurityChecks } from '../heuristics/domain';
 import { runContentPolicyChecks } from '../heuristics/content';
 import { AIService } from '../services/ai';
+import { displayAnnotations, clearAnnotations, MOCK_ANNOTATIONS } from './annotator';
 
 console.log('🛡️ Shop Sentinel content script loaded on:', window.location.href);
 
@@ -455,12 +456,19 @@ async function handleAnalyzePage(payload: any) {
 
 async function handleHighlightElements(payload: any) {
   console.log('🎨 Highlighting elements...', payload);
-  return { highlighted: 0 };
+  
+  // TODO [TG-07 Integration]: Replace with real AI elements when TG-07 is merged
+  // Currently using mock data for testing annotations
+  const elementsToHighlight = payload?.elements || MOCK_ANNOTATIONS;
+  
+  const result = displayAnnotations(elementsToHighlight);
+  return result;
 }
 
 async function handleClearHighlights() {
   console.log('🧹 Clearing highlights...');
-  return { cleared: 0 };
+  const result = clearAnnotations();
+  return result;
 }
 
 chrome.runtime.onMessage.addListener(

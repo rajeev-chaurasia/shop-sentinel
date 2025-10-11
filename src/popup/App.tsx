@@ -10,6 +10,7 @@ function App() {
   const [useAI, setUseAI] = useState(true);
   const [isFromCache, setIsFromCache] = useState(false);
   const [pollInterval, setPollInterval] = useState<number | null>(null);
+  const [annotationsVisible, setAnnotationsVisible] = useState(false);
   
   const {
     currentUrl,
@@ -164,6 +165,34 @@ function App() {
       }
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Analysis failed');
+    }
+  };
+
+  const handleToggleAnnotations = async () => {
+    try {
+      if (annotationsVisible) {
+        // Clear annotations
+        const response = await MessagingService.sendToActiveTab('CLEAR_HIGHLIGHTS');
+        if (response.success) {
+          setAnnotationsVisible(false);
+          console.log('✅ Annotations cleared');
+        }
+      } else {
+        // Show annotations with mock data (TG-07 will provide real data)
+        const response = await MessagingService.sendToActiveTab('HIGHLIGHT_ELEMENTS', {
+          // TODO [TG-07 Integration]: Replace with real AI elements
+          // Currently using mock data from annotator
+          elements: undefined, // Will use MOCK_ANNOTATIONS in content script
+        });
+        
+        if (response.success) {
+          setAnnotationsVisible(true);
+          console.log(`✅ Annotations displayed: ${response.data?.highlighted || 0} elements`);
+        }
+      }
+    } catch (error) {
+      console.error('❌ Error toggling annotations:', error);
+      setError('Failed to toggle annotations');
     }
   };
 
@@ -368,6 +397,37 @@ function App() {
                       </h3>
                       <PolicySummary policies={analysisResult.policies} compact={true} />
                     </div>
+                    
+                    {/* TG-09: On-Page Annotations Toggle */}
+                    {analysisResult.allSignals.length > 0 && (
+                      <div className="bg-gradient-to-br from-orange-50 to-yellow-50 rounded-xl p-4 border-2 border-orange-300">
+                        <div className="flex items-center justify-between mb-2">
+                          <div className="flex items-center gap-2">
+                            <span className="text-xl">🎨</span>
+                            <div>
+                              <div className="text-sm font-bold text-gray-900">Page Annotations</div>
+                              <div className="text-xs text-gray-600">Highlight issues on page</div>
+                            </div>
+                          </div>
+                        </div>
+                        <button
+                          onClick={handleToggleAnnotations}
+                          className={`w-full py-2.5 px-4 rounded-lg font-semibold text-sm transition-all duration-200 shadow-sm ${
+                            annotationsVisible
+                              ? 'bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600 text-white'
+                              : 'bg-gradient-to-r from-orange-500 to-yellow-500 hover:from-orange-600 hover:to-yellow-600 text-white'
+                          }`}
+                        >
+                          {annotationsVisible ? '👁️ Hide Highlights' : '🔍 Show Highlights'}
+                        </button>
+                        <p className="text-xs text-gray-600 mt-2 text-center">
+                          {annotationsVisible 
+                            ? 'Highlights are visible on the page' 
+                            : 'Click to see issues highlighted on the page'}
+                        </p>
+                      </div>
+                    )}
+                    
                     <button onClick={() => handleAnalyze(true)} disabled={isLoading} className="w-full mt-2 py-3 px-4 bg-gradient-to-r from-gray-100 to-gray-200 hover:from-gray-200 hover:to-gray-300 disabled:from-gray-50 disabled:to-gray-100 border-2 border-gray-300 text-gray-700 font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed">
                       {isLoading ? '🔄 Re-analyzing...' : '🔄 Re-analyze Page'}
                     </button>
