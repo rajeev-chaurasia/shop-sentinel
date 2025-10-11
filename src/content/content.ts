@@ -315,8 +315,9 @@ async function handleAnalyzePage(payload: any) {
     const { security, domain, payment } = await runDomainSecurityChecks();
     const { contact, policies } = await runContentPolicyChecks();
     
-    const aiAvailable = await AIService.checkAvailability();
-    console.log(`🤖 AI Available: ${aiAvailable}`);
+    const aiStatus = await AIService.checkAvailability();
+    const aiAvailable = aiStatus.available;
+    console.log(`🤖 AI Status:`, aiStatus);
     
     let aiSignals: any[] = [];
     let aiAnalysisTime = 0;
@@ -338,24 +339,32 @@ async function handleAnalyzePage(payload: any) {
           console.warn('⚠️ AI session failed to initialize, skipping AI analysis');
           aiAnalysisTime = performance.now() - aiStartTime;
         } else {
-          // Extract page content for AI analysis
+          // Extract page content for AI analysis with enhanced data
           const pageContent = {
             url: window.location.href,
             title: document.title,
-            pageType: pageType, // Pass string type for AI
+            pageType: pageType, // Pass page type for contextual analysis
             confidence: pageTypeResult.confidence,
-            headings: Array.from(document.querySelectorAll('h1, h2, h3'))
+            headings: Array.from(document.querySelectorAll('h1, h2, h3, h4'))
               .map(el => el.textContent?.trim() || '')
-              .filter(text => text.length > 0)
-              .slice(0, 10), // Limit to reduce token usage
-            buttons: Array.from(document.querySelectorAll('button, a.btn, input[type="submit"]'))
-              .map(el => el.textContent?.trim() || (el as HTMLInputElement).value || '')
-              .filter(text => text.length > 0)
-              .slice(0, 20), // Limit to reduce token usage
+              .filter(text => text.length > 0 && text.length < 200) // Filter out overly long headings
+              .slice(0, 15), // Increased limit for better context
+            buttons: Array.from(document.querySelectorAll('button, a.btn, input[type="submit"], [role="button"]'))
+              .map(el => {
+                const text = el.textContent?.trim() || (el as HTMLInputElement).value || '';
+                const ariaLabel = el.getAttribute('aria-label')?.trim() || '';
+                return text || ariaLabel;
+              })
+              .filter(text => text.length > 0 && text.length < 100) // Filter reasonable button text
+              .slice(0, 25), // Increased for better dark pattern detection
             forms: Array.from(document.querySelectorAll('form'))
-              .map(form => form.id || form.className || 'form')
+              .map((form, index) => {
+                const id = form.id || form.className || `form-${index}`;
+                const inputs = Array.from(form.querySelectorAll('input, select, textarea')).length;
+                return `${id} (${inputs} fields)`;
+              })
               .filter(text => text.length > 0)
-              .slice(0, 5),
+              .slice(0, 8), // More form context
           };
           
           const pageText = document.body.innerText || '';

@@ -3,7 +3,7 @@ import { useAnalysisStore } from '../stores';
 import { MessagingService } from '../services/messaging';
 import { StorageService } from '../services/storage';
 import type { AnalysisResult } from '../types';
-import { RiskMeter, ReasonsList, PolicySummary } from '../components';
+import { AIProgressIndicator, RiskMeter, ReasonsList, PolicySummary } from '../components';
 
 function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'reasons' | 'policies'>('overview');
@@ -322,7 +322,8 @@ function App() {
           )}
 
           {!analysisResult && isLoading && (
-            <div className="flex-1 flex items-center justify-center p-6">
+            <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-6">
+              {/* Main Loading Animation */}
               <div className="text-center space-y-6 animate-scaleIn">
                 <div className="relative">
                   <div className="w-32 h-32 mx-auto bg-gradient-to-br from-blue-100 to-purple-100 rounded-full flex items-center justify-center shadow-lg animate-pulse">
@@ -350,6 +351,13 @@ function App() {
                   <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
                 </div>
               </div>
+
+              {/* Enhanced AI Progress Indicator */}
+              {useAI && (
+                <div className="w-full max-w-sm animate-fadeIn" style={{ animationDelay: '0.5s' }}>
+                  <AIProgressIndicator showDetails={true} />
+                </div>
+              )}
             </div>
           )}
 

@@ -46,54 +46,96 @@ export class AIService {
     private static isAvailable: boolean | null = null;
 
     /**
-     * Check if Chrome's Built-in AI is available
-     * Returns detailed status information
+     * Check if Chrome's Built-in AI is available with enhanced error reporting
      */
-    static async checkAvailability(): Promise<boolean> {
+    static async checkAvailability(): Promise<{
+        available: boolean;
+        status: 'ready' | 'downloading' | 'downloadable' | 'unavailable' | 'unsupported';
+        error?: string;
+        userMessage?: string;
+    }> {
         try {
             // Check if LanguageModel global exists (NEW API)
             if (typeof LanguageModel === 'undefined') {
-                console.log('❌ Chrome AI API not available - LanguageModel is undefined');
+                const error = 'Chrome AI API not available - LanguageModel is undefined';
+                console.log('❌', error);
                 console.log('💡 To enable AI:');
                 console.log('   1. Use Chrome Canary 128+ or Chrome Dev');
                 console.log('   2. Enable chrome://flags/#optimization-guide-on-device-model');
                 console.log('   3. Enable chrome://flags/#prompt-api-for-gemini-nano');
                 console.log('   4. Restart Chrome and wait for model download');
+                
                 this.isAvailable = false;
-                return false;
+                return {
+                    available: false,
+                    status: 'unsupported',
+                    error,
+                    userMessage: 'AI requires Chrome Canary with experimental flags enabled'
+                };
             }
 
             const capabilities = await LanguageModel.availability();
             console.log('🤖 Chrome AI Capabilities:', capabilities);
 
-            if (capabilities.available === 'unavailable') {
-                console.log('❌ AI not available on this device');
-                console.log('💡 Your device may not meet the requirements');
-                this.isAvailable = false;
-                return false;
-            }
+            switch (capabilities.available) {
+                case 'readily':
+                    this.isAvailable = true;
+                    return {
+                        available: true,
+                        status: 'ready',
+                        userMessage: 'AI model ready for analysis'
+                    };
 
-            if (capabilities.available === 'after-download') {
-                console.log('⏳ AI model is downloadable but not yet downloaded');
-                console.log('💡 Model will download on first use with user interaction');
-                this.isAvailable = true; // Mark as available, will download on first session
-                return true;
-            }
+                case 'after-download':
+                    console.log('⏳ AI model downloaded but needs initialization');
+                    this.isAvailable = true;
+                    return {
+                        available: true,
+                        status: 'downloadable',
+                        userMessage: 'AI model will initialize on first use'
+                    };
 
-            if (capabilities.available === 'downloadable') {
-                console.log('⏳ AI model is downloadable');
-                console.log('💡 Model will download on first use with user interaction');
-                this.isAvailable = true; // Mark as available, will download on first session
-                return true;
-            }
+                case 'downloadable':
+                    console.log('⏳ AI model needs to be downloaded');
+                    this.isAvailable = true;
+                    return {
+                        available: true,
+                        status: 'downloadable',
+                        userMessage: 'AI model will download on first use (may take time)'
+                    };
 
-            this.isAvailable = true; // Available readily
-            return true;
+                case 'unavailable':
+                default:
+                    const error = 'AI not available on this device';
+                    console.log('❌', error);
+                    console.log('💡 Your device may not meet the requirements');
+                    this.isAvailable = false;
+                    return {
+                        available: false,
+                        status: 'unavailable',
+                        error,
+                        userMessage: 'Your device does not support Chrome AI'
+                    };
+            }
         } catch (error) {
+            const errorMsg = error instanceof Error ? error.message : 'Unknown error';
             console.error('❌ Error checking AI availability:', error);
             this.isAvailable = false;
-            return false;
+            return {
+                available: false,
+                status: 'unavailable',
+                error: errorMsg,
+                userMessage: 'Failed to check AI availability'
+            };
         }
+    }
+
+    /**
+     * Simple availability check for backward compatibility
+     */
+    static async isAIReady(): Promise<boolean> {
+        const status = await this.checkAvailability();
+        return status.available;
     }
 
     /**
@@ -180,7 +222,7 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
     }
 
     /**
-     * Analyze text for dark patterns
+     * Analyze page content for dark patterns with enhanced prompt engineering
      */
     static async analyzeDarkPatterns(pageContent: {
         url: string;
@@ -188,6 +230,7 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
         headings: string[];
         buttons: string[];
         forms: string[];
+        pageType?: string;
     }): Promise<RiskSignal[]> {
         try {
             const initialized = await this.initializeSession();
@@ -196,59 +239,141 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
                 return [];
             }
 
-            const prompt = `Analyze this e-commerce page for dark patterns and deceptive practices:
-
-URL: ${pageContent.url}
-Title: ${pageContent.title}
-Headings: ${pageContent.headings.slice(0, 10).join(', ')}
-Buttons: ${pageContent.buttons.slice(0, 15).join(', ')}
-Forms: ${pageContent.forms.slice(0, 5).join(', ')}
-
-Identify any dark patterns such as:
-- False urgency (fake scarcity, countdown timers)
-- Forced continuity (hard to cancel subscriptions)
-- Hidden costs (surprise fees at checkout)
-- Trick questions (confusing opt-out checkboxes)
-- Bait and switch (misleading product descriptions)
-- Confirmshaming (guilt-tripping language)
-
-IMPORTANT: Return ONLY valid JSON array, no other text or markdown.
-Format:
-[
-  {
-    "pattern": "pattern name",
-    "severity": "low",
-    "score": 5,
-    "reason": "brief description",
-    "details": "specific evidence",
-    "location": "where found"
-  }
-]
-
-If no patterns found, return: []
-
-No markdown code blocks, no explanations, JSON only.`;
-
+            // Enhanced prompt with better context and stricter validation
+            const prompt = this.constructDarkPatternPrompt(pageContent);
             const response = await this.session.prompt(prompt);
-            console.log('🤖 AI Dark Pattern Analysis:', response);
+            
+            console.log('🤖 AI Dark Pattern Analysis Response:', response?.slice(0, 200) + '...');
 
-            // Parse AI response
-            const findings = this.parseAIResponse(response);
+            // Enhanced parsing with validation
+            const findings = this.parseAndValidateDarkPatterns(response);
 
-            // Convert to RiskSignal format
-            return findings.map((finding: any, index: number) => ({
-                id: `ai-dark-${index + 1}`,
-                score: finding.score,
-                reason: finding.reason,
-                severity: finding.severity as 'low' | 'medium' | 'high',
-                category: 'dark-pattern' as const,
-                source: 'ai' as const,
-                details: finding.details,
-            }));
+            // Convert to RiskSignal format with validation
+            return findings
+                .filter(finding => this.isValidDarkPatternFinding(finding))
+                .map((finding: any, index: number) => ({
+                    id: `ai-dark-${index + 1}`,
+                    score: Math.min(50, Math.max(1, finding.score || 10)), // Clamp score
+                    reason: finding.reason || 'Dark pattern detected',
+                    severity: this.normalizeSeverity(finding.severity) as 'low' | 'medium' | 'high',
+                    category: 'dark-pattern' as const,
+                    source: 'ai' as const,
+                    details: finding.details || finding.evidence || 'Detected by AI analysis',
+                }));
         } catch (error) {
             console.error('❌ Error analyzing dark patterns:', error);
             return [];
         }
+    }
+
+    /**
+     * Construct enhanced dark pattern analysis prompt
+     */
+    private static constructDarkPatternPrompt(pageContent: {
+        url: string;
+        title: string;
+        headings: string[];
+        buttons: string[];
+        forms: string[];
+        pageType?: string;
+    }): string {
+        const contextualInstructions = pageContent.pageType === 'checkout' 
+            ? 'Focus on checkout-specific dark patterns: hidden fees, forced subscriptions, default opt-ins.'
+            : pageContent.pageType === 'product'
+            ? 'Focus on product page dark patterns: fake scarcity, misleading reviews, bait-and-switch.'
+            : 'Analyze all common e-commerce dark patterns.';
+
+        return `You are an expert in identifying deceptive e-commerce practices. Analyze this ${pageContent.pageType || 'e-commerce'} page for dark patterns.
+
+PAGE CONTEXT:
+URL: ${pageContent.url}
+Title: ${pageContent.title}
+Page Type: ${pageContent.pageType || 'unknown'}
+
+CONTENT ANALYSIS:
+Headings: ${pageContent.headings.slice(0, 12).join(' | ')}
+Buttons: ${pageContent.buttons.slice(0, 20).join(' | ')}
+Forms: ${pageContent.forms.slice(0, 8).join(' | ')}
+
+ANALYSIS INSTRUCTIONS:
+${contextualInstructions}
+
+Look for these specific patterns:
+1. False Urgency: "Only 2 left!", fake countdown timers, "Limited time offer"
+2. Forced Continuity: Auto-renewal defaults, hard-to-find cancel options
+3. Hidden Costs: Surprise fees at checkout, mandatory add-ons
+4. Trick Questions: Confusing opt-out checkboxes, double negatives
+5. Confirmshaming: "No thanks, I don't want to save money"
+6. Bait & Switch: Misleading prices, different product at checkout
+7. Social Proof Manipulation: Fake reviews, "people are viewing"
+
+RESPONSE FORMAT - RETURN ONLY VALID JSON:
+[
+  {
+    "pattern": "false_urgency",
+    "severity": "medium",
+    "score": 15,
+    "reason": "Fake scarcity claim without verification",
+    "details": "Button text claims 'Only 2 left' but no inventory verification visible",
+    "evidence": "specific text or element found"
+  }
+]
+
+VALIDATION RULES:
+- severity: must be "low", "medium", or "high"
+- score: integer between 1-50
+- Only include patterns you're confident about (>70% certainty)
+- If no patterns found, return: []
+
+Return JSON only, no markdown, no explanations.`;
+    }
+
+    /**
+     * Parse and validate dark pattern findings with enhanced error handling
+     */
+    private static parseAndValidateDarkPatterns(response: string): any[] {
+        try {
+            const parsed = this.parseAIResponse(response);
+            
+            if (!Array.isArray(parsed)) {
+                console.warn('⚠️ Dark pattern response not an array, attempting to wrap');
+                return parsed ? [parsed] : [];
+            }
+
+            return parsed.filter(item => {
+                if (!item || typeof item !== 'object') return false;
+                
+                // Validate required fields
+                const hasRequiredFields = item.pattern || item.reason;
+                const hasValidSeverity = ['low', 'medium', 'high'].includes(item.severity);
+                const hasValidScore = typeof item.score === 'number' && item.score > 0 && item.score <= 50;
+
+                if (!hasRequiredFields || !hasValidSeverity || !hasValidScore) {
+                    console.warn('⚠️ Filtering out invalid dark pattern finding:', item);
+                    return false;
+                }
+
+                return true;
+            });
+        } catch (error) {
+            console.error('❌ Error parsing dark patterns:', error);
+            return [];
+        }
+    }
+
+    /**
+     * Validate individual dark pattern finding
+     */
+    private static isValidDarkPatternFinding(finding: any): boolean {
+        return (
+            finding &&
+            typeof finding === 'object' &&
+            (finding.pattern || finding.reason) &&
+            ['low', 'medium', 'high'].includes(finding.severity) &&
+            typeof finding.score === 'number' &&
+            finding.score > 0 &&
+            finding.score <= 50
+        );
     }
 
     /**
@@ -299,69 +424,8 @@ Domain Protection: ${pageData.domainStatus?.length || 0} status flags${pageData.
 - Total Social Platforms: ${pageData.socialMedia.count || 0}`
                 : 'Social Media: Unknown';
 
-            const prompt = `Evaluate the legitimacy of this e-commerce website:
-
-URL: ${pageData.url}
-Title: ${pageData.title}
-
-🔒 Security:
-- HTTPS: ${pageData.hasHTTPS ? 'Yes' : 'No'}
-- Contact Info: ${pageData.hasContactInfo ? 'Found' : 'Missing'}
-- Policies: ${pageData.hasPolicies ? 'Present' : 'Absent'}
-
-🌐 Domain Intelligence:
-${domainInfo}
-
-📱 ${socialInfo}
-
-📄 Content Sample: ${pageData.content.slice(0, 400)}
-
-⭐ CRITICAL CONTEXT-AWARE RULES:
-
-1. ESTABLISHED BUSINESSES (Domain age >5 years + 3+ protection flags):
-   - Missing social media links = LOW concern (they exist but may not be linked on all pages)
-   - These are proven legitimate businesses - focus on other signals
-   - Examples: Walmart, Amazon, Target are 20-30 year old domains
-
-2. NEW BUSINESSES (Domain age <180 days + 0-1 protection flags):
-   - Missing social media = MEDIUM-HIGH concern
-   - Combined with missing contact info = VERY suspicious
-   - New sites should be establishing social presence
-
-3. PROTECTION FLAGS ARE KEY TRUST INDICATORS:
-   - 6 flags (clientDeleteProhibited, etc.) = Maximum security = Very legitimate
-   - 3-5 flags = Good security posture = Likely legitimate
-   - 0-1 flags = Minimal protection = Requires extra scrutiny
-
-4. REGISTRAR REPUTATION:
-   - MarkMonitor, CSC, Brand Registry = Premium (used by Fortune 500)
-   - GoDaddy, Namecheap, Network Solutions = Standard but legitimate
-   - Privacy-protected registrars = Needs extra verification
-
-5. HOLISTIC ASSESSMENT:
-   - Don't focus on single missing element
-   - Weight domain age + protection flags heavily
-   - Recognizable brand names (in URL/title) are strong positive signals
-   - Consider if site NEEDS social media (B2B enterprise vs B2C retail)
-
-TASK: Identify legitimacy concerns based on the COMPLETE profile above.
-
-Return ONLY valid JSON array, no other text.
-Format:
-[
-  {
-    "concern": "issue name",
-    "severity": "low"|"medium"|"high",
-    "score": 1-50,
-    "reason": "description",
-    "details": "specific evidence"
-  }
-]
-
-If domain profile shows strong trust signals (old age + protection flags + contact info), return: []
-If domain is suspicious (new + no protection + missing info + no social), flag concerns.
-
-No markdown, no explanations, JSON only.`;
+            // Enhanced legitimacy analysis prompt with better structure
+            const prompt = this.constructLegitimacyPrompt(pageData, domainInfo, socialInfo);
 
             const response = await this.session.prompt(prompt);
             console.log('🤖 AI Legitimacy Analysis:', response);
@@ -384,7 +448,140 @@ No markdown, no explanations, JSON only.`;
     }
 
     /**
-     * Parse AI response (handle both JSON and text responses)
+     * Construct enhanced legitimacy analysis prompt
+     */
+    private static constructLegitimacyPrompt(
+        pageData: {
+            url: string;
+            title: string;
+            content: string;
+            hasHTTPS: boolean;
+            hasContactInfo: boolean;
+            hasPolicies: boolean;
+            socialMedia?: any;
+            domainAge?: number | null;
+            domainAgeYears?: number | null;
+            domainStatus?: string[] | null;
+            domainRegistrar?: string | null;
+        },
+        domainInfo: string,
+        socialInfo: string
+    ): string {
+        const trustLevel = this.assessDomainTrustLevel(pageData);
+        
+        return `You are a cybersecurity expert specializing in e-commerce fraud detection. Analyze this website's legitimacy using advanced risk assessment.
+
+WEBSITE PROFILE:
+URL: ${pageData.url}
+Title: ${pageData.title}
+Trust Level: ${trustLevel.level} (${trustLevel.reasoning})
+
+SECURITY BASELINE:
+- HTTPS: ${pageData.hasHTTPS ? '✅ Secure' : '❌ INSECURE'}
+- Contact Info: ${pageData.hasContactInfo ? '✅ Available' : '❌ Missing'}
+- Policies: ${pageData.hasPolicies ? '✅ Present' : '❌ Absent'}
+
+DOMAIN INTELLIGENCE:
+${domainInfo}
+
+SOCIAL PRESENCE:
+${socialInfo}
+
+CONTENT SAMPLE:
+${pageData.content.slice(0, 600)}
+
+ANALYSIS FRAMEWORK:
+
+🏆 ESTABLISHED BUSINESS INDICATORS (Domain age >3 years):
+- Missing social media = LOW concern (may not link all platforms)
+- Focus on security, policies, and contact information
+- Premium registrars (MarkMonitor, CSC) = High trust
+
+🚨 NEW BUSINESS RED FLAGS (Domain age <6 months):
+- Missing social media = HIGH concern
+- Missing contact info = CRITICAL concern
+- Minimal domain protection = HIGH concern
+- Combination of above = SCAM LIKELY
+
+🔍 CONTEXTUAL ASSESSMENT RULES:
+1. B2B sites may have minimal social presence (acceptable)
+2. Enterprise brands may not link social media on all pages
+3. Protection flags (clientDeleteProhibited) indicate investment in security
+4. Premium registrars indicate serious business commitment
+
+RESPONSE REQUIREMENTS:
+- Only flag legitimate concerns based on FULL context
+- Don't penalize established businesses for minor omissions
+- Focus on patterns that indicate ACTUAL fraud risk
+- Be conservative with scoring (max 30 per issue)
+
+Return ONLY valid JSON array:
+[
+  {
+    "concern": "specific_issue_name",
+    "severity": "low"|"medium"|"high",
+    "score": 1-30,
+    "reason": "Clear explanation of the concern",
+    "details": "Specific evidence supporting this assessment"
+  }
+]
+
+If analysis shows STRONG trust signals, return: []
+If analysis shows WEAK trust signals, flag specific concerns.
+
+JSON only, no markdown, no explanations.`;
+    }
+
+    /**
+     * Assess domain trust level for context-aware analysis
+     */
+    private static assessDomainTrustLevel(pageData: {
+        domainAge?: number | null;
+        domainStatus?: string[] | null;
+        domainRegistrar?: string | null;
+        hasHTTPS: boolean;
+        hasContactInfo: boolean;
+    }): { level: string; reasoning: string } {
+        const age = pageData.domainAge || 0;
+        const protectionFlags = pageData.domainStatus?.length || 0;
+        const premiumRegistrar = ['markmonitor', 'csc', 'brand registry'].some(reg => 
+            pageData.domainRegistrar?.toLowerCase().includes(reg)
+        );
+
+        if (age > 1825 && protectionFlags >= 3) { // 5+ years, good protection
+            return { level: 'HIGH', reasoning: 'Established domain with strong protection' };
+        }
+        
+        if (age > 1095 && (protectionFlags >= 2 || premiumRegistrar)) { // 3+ years
+            return { level: 'MEDIUM-HIGH', reasoning: 'Mature domain with decent protection' };
+        }
+        
+        if (age > 365) { // 1+ year
+            return { level: 'MEDIUM', reasoning: 'Moderately established domain' };
+        }
+        
+        if (age > 90) { // 3+ months
+            return { level: 'MEDIUM-LOW', reasoning: 'Relatively new domain' };
+        }
+        
+        return { level: 'LOW', reasoning: 'Very new or unknown domain age' };
+    }
+
+    /**
+     * Normalize severity to valid values
+     */
+    private static normalizeSeverity(severity: string): 'low' | 'medium' | 'high' {
+        if (!severity || typeof severity !== 'string') return 'low';
+        
+        const normalized = severity.toLowerCase().trim();
+        
+        if (['high', 'critical', 'severe'].includes(normalized)) return 'high';
+        if (['medium', 'moderate', 'warning'].includes(normalized)) return 'medium';
+        return 'low'; // Default fallback
+    }
+
+    /**
+     * Parse AI response with enhanced error handling and validation
      */
     private static parseAIResponse(response: string): any {
         try {
