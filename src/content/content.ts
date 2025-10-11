@@ -312,8 +312,14 @@ async function handleAnalyzePage(payload: any) {
     // Mark analysis as in progress with page context
     await StorageService.setAnalysisInProgress(window.location.href, pageType, payload?.includeAI !== false);
     
-    const { security, domain, payment } = await runDomainSecurityChecks();
-    const { contact, policies } = await runContentPolicyChecks();
+    // Run heuristic checks in parallel for better performance
+    const [
+      { security, domain, payment },
+      { contact, policies }
+    ] = await Promise.all([
+      runDomainSecurityChecks(),
+      runContentPolicyChecks()
+    ]);
     
     const aiAvailable = await AIService.checkAvailability();
     console.log(`🤖 AI Available: ${aiAvailable}`);
