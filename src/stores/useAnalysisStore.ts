@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { AnalysisResult, createEmptyAnalysis, PolicySummary } from '../types';
+import { AnalysisResult, PolicySummary } from '../types';
 
 interface AnalysisState {
   currentUrl: string | null;
@@ -52,7 +52,7 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
       isLoading: true,
       error: null,
       analysisProgress: 0,
-      analysisResult: createEmptyAnalysis(url),
+      analysisResult: null, // Clear result to show loading state
     });
   },
   

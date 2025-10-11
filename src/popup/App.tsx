@@ -1,11 +1,15 @@
 import { useEffect, useState } from 'react';
 import { useAnalysisStore } from '../stores';
 import { MessagingService } from '../services/messaging';
+import { StorageService } from '../services/storage';
 import type { AnalysisResult } from '../types';
 import { RiskMeter, ReasonsList, PolicySummary } from '../components';
 
 function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'reasons' | 'policies'>('overview');
+  const [useAI, setUseAI] = useState(true);
+  const [isFromCache, setIsFromCache] = useState(false);
+  const [pollInterval, setPollInterval] = useState<number | null>(null);
   
   const {
     currentUrl,
@@ -19,8 +23,57 @@ function App() {
   } = useAnalysisStore();
 
   useEffect(() => {
-    testConnection();
+    initializePopup();
+    
+    return () => {
+      if (pollInterval) {
+        clearInterval(pollInterval);
+      }
+    };
   }, []);
+
+  // Poll for results when in loading state
+  useEffect(() => {
+    if (isLoading && !pollInterval) {
+      console.log('⏳ Starting poll for analysis completion');
+      const interval = setInterval(async () => {
+        try {
+          const tab = await MessagingService.getActiveTab();
+          if (!tab?.url) return;
+
+          // Get current page type
+          const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+          if (!pageInfoResponse.success || !pageInfoResponse.data) return;
+
+          const pageType = pageInfoResponse.data.pageType || 'other';
+          
+          // Check cache for this specific page type only
+          const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
+          if (cached) {
+            console.log(`✅ Analysis completed! Loading result (${pageType})...`);
+            setAnalysisResult(cached);
+            completeAnalysis();
+            setIsFromCache(true);
+            clearInterval(interval);
+            setPollInterval(null);
+            return;
+          }
+        } catch (error) {
+          console.error('Poll error:', error);
+        }
+      }, 2000); // Check every 2 seconds
+      
+      setPollInterval(interval);
+    } else if (!isLoading && pollInterval) {
+      clearInterval(pollInterval);
+      setPollInterval(null);
+    }
+  }, [isLoading]);
+
+  const initializePopup = async () => {
+    await testConnection();
+    await loadCachedAnalysis();
+  };
 
   const testConnection = async () => {
     try {
@@ -33,7 +86,49 @@ function App() {
     }
   };
 
-  const handleAnalyze = async () => {
+  const loadCachedAnalysis = async () => {
+    try {
+      const tab = await MessagingService.getActiveTab();
+      if (!tab?.url) return;
+
+      // Check if analysis is in progress
+      const inProgress = await StorageService.isAnalysisInProgress(tab.url);
+      if (inProgress) {
+        console.log('⏳ Analysis in progress, entering loading state');
+        startAnalysis(tab.url);
+        return;
+      }
+
+      // Get current page type from content script
+      console.log('🔍 Getting page type for:', tab.url);
+      const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+      
+      if (!pageInfoResponse.success || !pageInfoResponse.data) {
+        console.log('❌ Could not get page info');
+        return;
+      }
+
+      const pageType = pageInfoResponse.data.pageType || 'other';
+      const confidence = pageInfoResponse.data.pageTypeConfidence || 0;
+      console.log(`📄 Detected page type: ${pageType} (confidence: ${confidence}%)`);
+
+      // Check cache only for this specific page type
+      console.log(`🔍 Checking cache for: ${tab.url} (${pageType})`);
+      const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
+      
+      if (cached) {
+        console.log(`✅ Cache hit for ${pageType}:`, cached);
+        setAnalysisResult(cached);
+        setIsFromCache(true);
+      } else {
+        console.log(`❌ No cache found for ${pageType} - ready to analyze`);
+      }
+    } catch (error) {
+      console.error('Failed to load cache:', error);
+    }
+  };
+
+  const handleAnalyze = async (force = false) => {
     try {
       const tab = await MessagingService.getActiveTab();
       if (!tab?.url) {
@@ -41,16 +136,29 @@ function App() {
         return;
       }
 
+      // If forcing refresh, clear cache first
+      if (force) {
+        await StorageService.clearCachedAnalysis(tab.url);
+        setIsFromCache(false);
+      }
+
       startAnalysis(tab.url);
 
       const response = await MessagingService.sendToActiveTab<any, AnalysisResult>(
         'ANALYZE_PAGE',
-        { url: tab.url, includeAI: false }
+        { url: tab.url, includeAI: useAI }
       );
 
       if (response.success && response.data) {
+        console.log('✅ Analysis complete, caching result for:', tab.url);
         setAnalysisResult(response.data);
         completeAnalysis();
+        
+        // Cache the result with pageType from the analysis
+        const pageType = response.data.pageType || 'other';
+        const cached = await StorageService.cacheAnalysis(tab.url, pageType, response.data);
+        console.log('💾 Cache saved:', cached);
+        setIsFromCache(false);
       } else {
         setError(response.error || 'Analysis failed');
       }
@@ -91,7 +199,7 @@ function App() {
             </div>
           )}
 
-          {!analysisResult && (
+          {!analysisResult && !isLoading && (
             <div className="flex-1 flex items-center justify-center p-6">
               <div className="text-center space-y-4 animate-scaleIn">
                 <div className="w-24 h-24 mx-auto bg-gradient-to-br from-blue-100 to-purple-100 rounded-full flex items-center justify-center shadow-lg">
@@ -103,7 +211,31 @@ function App() {
                     Check this website for security issues, dark patterns, and policy concerns
                   </p>
                 </div>
-                <button onClick={handleAnalyze} disabled={isLoading} className="w-full max-w-xs mx-auto bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-bold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:scale-105 disabled:transform-none disabled:opacity-50">
+                
+                {/* AI Toggle */}
+                <div className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-50 to-indigo-50 rounded-xl border border-purple-200 max-w-xs mx-auto">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={useAI}
+                      onChange={(e) => setUseAI(e.target.checked)}
+                      className="w-4 h-4 text-purple-600 rounded focus:ring-2 focus:ring-purple-500"
+                      title="Enable AI-powered analysis using Chrome's built-in Gemini Nano model"
+                    />
+                    <span className="text-sm font-semibold text-gray-700 flex items-center gap-1.5">
+                      <span className="text-base">🤖</span>
+                      <span>AI-Powered Analysis</span>
+                    </span>
+                  </label>
+                </div>
+                
+                {useAI && (
+                  <p className="text-xs text-center text-gray-500 max-w-xs mx-auto -mt-2">
+                    First use will download AI model (large download, one-time)
+                  </p>
+                )}
+                
+                <button onClick={() => handleAnalyze(false)} disabled={isLoading} className="w-full max-w-xs mx-auto bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-bold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:scale-105 disabled:transform-none disabled:opacity-50">
                   {isLoading ? (
                     <span className="flex items-center justify-center gap-2">
                       <span className="animate-spin">⚙️</span>
@@ -115,9 +247,58 @@ function App() {
             </div>
           )}
 
+          {!analysisResult && isLoading && (
+            <div className="flex-1 flex items-center justify-center p-6">
+              <div className="text-center space-y-6 animate-scaleIn">
+                <div className="relative">
+                  <div className="w-32 h-32 mx-auto bg-gradient-to-br from-blue-100 to-purple-100 rounded-full flex items-center justify-center shadow-lg animate-pulse">
+                    <span className="text-6xl animate-spin">⚙️</span>
+                  </div>
+                  <div className="absolute inset-0 w-32 h-32 mx-auto rounded-full border-4 border-purple-300 border-t-purple-600 animate-spin"></div>
+                </div>
+                <div className="space-y-2">
+                  <h2 className="text-xl font-bold text-gray-800">Analyzing Website...</h2>
+                  <p className="text-sm text-gray-600 max-w-sm mx-auto">
+                    {useAI ? (
+                      <>
+                        🤖 Running AI-powered analysis
+                        <br />
+                        <span className="text-xs text-gray-500">This may take 15-30 seconds</span>
+                      </>
+                    ) : (
+                      'Running security and pattern checks...'
+                    )}
+                  </p>
+                </div>
+                <div className="flex items-center justify-center gap-2 text-xs text-gray-500">
+                  <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-bounce"></span>
+                  <span className="inline-block w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></span>
+                  <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+                </div>
+              </div>
+            </div>
+          )}
+
           {analysisResult && (
             <div className="flex-1 flex flex-col">
               <div className="px-4 pt-4 pb-2">
+                <div className="flex items-center justify-between mb-3">
+                  {isFromCache && (
+                    <div className="flex items-center gap-2 text-xs text-gray-600 bg-blue-50 px-3 py-1.5 rounded-lg">
+                      <span>📦</span>
+                      <span>Cached result</span>
+                    </div>
+                  )}
+                  <button 
+                    onClick={() => handleAnalyze(true)} 
+                    disabled={isLoading}
+                    className="ml-auto text-xs text-blue-600 hover:text-blue-700 disabled:text-gray-400 flex items-center gap-1 px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors"
+                    title="Run fresh analysis"
+                  >
+                    <span className={isLoading ? 'animate-spin' : ''}>🔄</span>
+                    <span>Refresh</span>
+                  </button>
+                </div>
                 <div className="flex gap-1 bg-gray-100 rounded-xl p-1.5 shadow-inner">
                   <button onClick={() => setActiveTab('overview')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 ${activeTab === 'overview' ? 'bg-white text-blue-600 shadow-md transform scale-105' : 'text-gray-600 hover:text-gray-900 hover:bg-white hover:bg-opacity-50'}`}>
                     Overview
@@ -142,6 +323,16 @@ function App() {
                     <div className="flex justify-center py-6 bg-gradient-to-br from-gray-50 to-blue-50 rounded-xl">
                       <RiskMeter score={analysisResult.totalRiskScore} level={analysisResult.riskLevel} size="large" animated={true} />
                     </div>
+                    
+                    {/* AI Status Indicator */}
+                    {analysisResult.aiEnabled && (
+                      <div className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-50 to-indigo-50 rounded-xl border border-purple-200">
+                        <span className="text-lg">🤖</span>
+                        <span className="text-sm font-bold text-gray-700">
+                          AI Analysis: <span className="text-purple-600">{analysisResult.aiSignalsCount || 0} signals detected</span>
+                        </span>
+                      </div>
+                    )}
                     <div className="grid grid-cols-2 gap-3">
                       <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-4 border border-blue-200 shadow-sm">
                         <div className="text-xs font-semibold text-blue-600 mb-1.5 uppercase tracking-wide">Security</div>
@@ -177,7 +368,7 @@ function App() {
                       </h3>
                       <PolicySummary policies={analysisResult.policies} compact={true} />
                     </div>
-                    <button onClick={handleAnalyze} disabled={isLoading} className="w-full mt-2 py-3 px-4 bg-gradient-to-r from-gray-100 to-gray-200 hover:from-gray-200 hover:to-gray-300 disabled:from-gray-50 disabled:to-gray-100 border-2 border-gray-300 text-gray-700 font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed">
+                    <button onClick={() => handleAnalyze(true)} disabled={isLoading} className="w-full mt-2 py-3 px-4 bg-gradient-to-r from-gray-100 to-gray-200 hover:from-gray-200 hover:to-gray-300 disabled:from-gray-50 disabled:to-gray-100 border-2 border-gray-300 text-gray-700 font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed">
                       {isLoading ? '🔄 Re-analyzing...' : '🔄 Re-analyze Page'}
                     </button>
                   </div>

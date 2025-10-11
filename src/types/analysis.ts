@@ -76,6 +76,7 @@ export interface AIAnalysis {
 export interface AnalysisResult {
   url: string;
   timestamp: number;
+  pageType?: string; // Page type detected (home, product, checkout, etc.)
   security: SecurityAnalysis;
   domain: DomainAnalysis;
   contact: ContactAnalysis;
@@ -87,6 +88,8 @@ export interface AnalysisResult {
   allSignals: RiskSignal[];
   analysisVersion: string;
   isEcommerceSite: boolean;
+  aiEnabled?: boolean;
+  aiSignalsCount?: number;
 }
 
 export interface PolicySummary {
@@ -120,21 +123,4 @@ export function getRiskColor(level: RiskSeverity): string {
     critical: '#ef4444',
   };
   return colors[level];
-}
-
-export function createEmptyAnalysis(url: string): AnalysisResult {
-  return {
-    url,
-    timestamp: Date.now(),
-    security: { isHttps: false, hasMixedContent: false, hasValidCertificate: false, signals: [] },
-    domain: { domain: '', ageInDays: null, registrar: null, isSuspicious: false, signals: [] },
-    contact: { hasContactPage: false, hasPhoneNumber: false, hasPhysicalAddress: false, hasEmail: false, socialMediaLinks: [], signals: [] },
-    policies: { hasReturnPolicy: false, hasShippingPolicy: false, hasRefundPolicy: false, hasTermsOfService: false, hasPrivacyPolicy: false, policyUrls: {}, signals: [] },
-    payment: { acceptedMethods: [], hasReversibleMethods: false, hasIrreversibleOnly: false, signals: [] },
-    totalRiskScore: 0,
-    riskLevel: 'safe',
-    allSignals: [],
-    analysisVersion: '1.0.0',
-    isEcommerceSite: false,
-  };
 }
