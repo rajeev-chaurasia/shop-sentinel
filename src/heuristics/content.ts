@@ -1,7 +1,8 @@
 import { 
   RiskSignal, 
   ContactAnalysis, 
-  PolicyAnalysis 
+  PolicyAnalysis,
+  SocialMediaProfile 
 } from '../types/analysis';
 
 const SCORES = {
@@ -13,7 +14,6 @@ const SCORES = {
 export function checkContactInfo(): ContactAnalysis {
   const signals: RiskSignal[] = [];
   const bodyText = document.body.innerText.toLowerCase();
-  const bodyHTML = document.body.innerHTML.toLowerCase();
   
   // Check for contact page
   const contactLinks = document.querySelectorAll('a[href*="contact"]');
@@ -36,22 +36,64 @@ export function checkContactInfo(): ContactAnalysis {
   const emailPattern = /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/;
   const hasEmail = emailPattern.test(bodyText);
   
-  const socialMediaLinks: string[] = [];
+  // Enhanced social media detection - find actual links, not just domain mentions
+  const socialMediaLinks: string[] = []; // Platform names for backward compatibility
+  const socialMediaProfiles: SocialMediaProfile[] = [];
+  
   const socialMediaDomains = [
-    { name: 'facebook', patterns: ['facebook.com', 'fb.com'] },
-    { name: 'twitter', patterns: ['twitter.com', 'x.com'] },
-    { name: 'instagram', patterns: ['instagram.com'] },
-    { name: 'linkedin', patterns: ['linkedin.com'] },
-    { name: 'youtube', patterns: ['youtube.com'] },
-    { name: 'pinterest', patterns: ['pinterest.com'] },
-    { name: 'tiktok', patterns: ['tiktok.com'] },
+    { name: 'facebook', patterns: ['facebook.com/'], urls: [] as string[] },
+    { name: 'twitter', patterns: ['twitter.com/', 'x.com/'], urls: [] as string[] },
+    { name: 'instagram', patterns: ['instagram.com/'], urls: [] as string[] },
+    { name: 'linkedin', patterns: ['linkedin.com/company/', 'linkedin.com/in/'], urls: [] as string[] },
+    { name: 'youtube', patterns: ['youtube.com/@', 'youtube.com/c/', 'youtube.com/channel/'], urls: [] as string[] },
+    { name: 'pinterest', patterns: ['pinterest.com/'], urls: [] as string[] },
+    { name: 'tiktok', patterns: ['tiktok.com/@'], urls: [] as string[] },
   ];
   
-  socialMediaDomains.forEach(({ name, patterns }) => {
-    const found = patterns.some(pattern => bodyHTML.includes(pattern));
-    if (found && !socialMediaLinks.includes(name)) {
-      socialMediaLinks.push(name);
+  // Detect location context
+  const footer = document.querySelector('footer, [role="contentinfo"]');
+  const header = document.querySelector('header, [role="banner"], nav');
+  
+  // Find actual anchor tags pointing to social media
+  document.querySelectorAll('a[href]').forEach(link => {
+    const href = link.getAttribute('href') || '';
+    const lowerHref = href.toLowerCase();
+    
+    // Determine location
+    let location: 'footer' | 'header' | 'body' | 'unknown' = 'unknown';
+    if (footer?.contains(link)) {
+      location = 'footer';
+    } else if (header?.contains(link)) {
+      location = 'header';
+    } else {
+      location = 'body';
     }
+    
+    // Check each social platform
+    socialMediaDomains.forEach(({ name, patterns }) => {
+      patterns.forEach(pattern => {
+        if (lowerHref.includes(pattern) && 
+            !lowerHref.includes('sharer') && // Exclude share buttons
+            !lowerHref.includes('share.php') &&
+            !lowerHref.includes('intent/tweet')) { // Exclude tweet buttons
+          
+          // Add to profiles if not already added
+          const exists = socialMediaProfiles.some(p => p.platform === name);
+          if (!exists) {
+            socialMediaProfiles.push({
+              platform: name,
+              url: href,
+              location
+            });
+            
+            // Also add to legacy array
+            if (!socialMediaLinks.includes(name)) {
+              socialMediaLinks.push(name);
+            }
+          }
+        }
+      });
+    });
   });
   // Generate signals for missing contact information
   const missingInfo: string[] = [];
@@ -72,17 +114,16 @@ export function checkContactInfo(): ContactAnalysis {
     });
   }
   
-  if (socialMediaLinks.length === 0) {
-    signals.push({
-      id: 'no-social-media',
-      score: SCORES.NO_SOCIAL_MEDIA,
-      reason: 'No social media presence found',
-      severity: 'low',
-      category: 'legitimacy',
-      source: 'heuristic',
-      details: 'Established businesses usually maintain social media profiles for customer engagement.',
-    });
-  }
+  // ⚠️ DON'T blindly penalize missing social media - let AI make context-aware decision
+  // Social media absence is only concerning for NEW sites with other red flags
+  // Established businesses (old domains, premium registrars) may not link social media on all pages
+  // The AI will receive social media data and make intelligent assessment based on full context
+  
+  console.log('📱 Social media detection:', {
+    found: socialMediaProfiles.length,
+    platforms: socialMediaProfiles.map(p => `${p.platform} (${p.location})`),
+    legacy_count: socialMediaLinks.length
+  });
   
   return {
     hasContactPage,
@@ -90,6 +131,7 @@ export function checkContactInfo(): ContactAnalysis {
     hasPhysicalAddress,
     hasEmail,
     socialMediaLinks,
+    socialMediaProfiles,
     signals,
   };
 }

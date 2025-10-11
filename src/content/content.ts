@@ -2,6 +2,7 @@ import { createMessageHandler } from '../services/messaging';
 import { runDomainSecurityChecks } from '../heuristics/domain';
 import { runContentPolicyChecks } from '../heuristics/content';
 import { AIService } from '../services/ai';
+import { RiskCalculator } from '../services/riskCalculator';
 import { displayAnnotations, clearAnnotations, MOCK_ANNOTATIONS } from './annotator';
 
 console.log('🛡️ Shop Sentinel content script loaded on:', window.location.href);
@@ -286,14 +287,29 @@ async function handleAnalyzePage(payload: any) {
   console.log('🔍 Starting page analysis...', payload);
   const startTime = performance.now();
   
+  // Import storage service first
+  const { StorageService } = await import('../services/storage');
+  
   try {
     // Detect page type with confidence scoring
     const pageTypeResult = detectPageType();
     const pageType = pageTypeResult.type;
     console.log(`📄 Page Type: ${pageType} (confidence: ${pageTypeResult.confidence}%, signals: ${pageTypeResult.signals.join(', ')})`);
     
+    // Try to acquire distributed lock to prevent duplicate analysis
+    const lockAcquired = await StorageService.acquireAnalysisLock(window.location.href, pageType);
+    
+    if (!lockAcquired) {
+      console.log('⏳ Analysis already in progress in another tab');
+      return {
+        status: 'in_progress',
+        message: 'Analysis is already running in another tab. Please wait or check that tab.',
+        url: window.location.href,
+        pageType,
+      };
+    }
+    
     // Mark analysis as in progress with page context
-    const { StorageService } = await import('../services/storage');
     await StorageService.setAnalysisInProgress(window.location.href, pageType, payload?.includeAI !== false);
     
     const { security, domain, payment } = await runDomainSecurityChecks();
@@ -350,16 +366,43 @@ async function handleAnalyzePage(payload: any) {
           // Analyze dark patterns with page context
           analyses.push(AIService.analyzeDarkPatterns(pageContent));
           
-          // Legitimacy check only on pages where it matters
+          // Legitimacy check only on pages where it matters - with full context
           if (pageType === 'product' || pageType === 'checkout' || pageType === 'home') {
+            // Extract social media data from profiles
+            const socialMediaData = {
+              facebook: contact.socialMediaProfiles.find(p => p.platform === 'facebook')?.url || null,
+              twitter: contact.socialMediaProfiles.find(p => p.platform === 'twitter')?.url || null,
+              instagram: contact.socialMediaProfiles.find(p => p.platform === 'instagram')?.url || null,
+              linkedin: contact.socialMediaProfiles.find(p => p.platform === 'linkedin')?.url || null,
+              youtube: contact.socialMediaProfiles.find(p => p.platform === 'youtube')?.url || null,
+              count: contact.socialMediaProfiles.length,
+            };
+            
             analyses.push(AIService.analyzeLegitimacy({
               url: window.location.href,
               title: document.title,
-              content: pageText.slice(0, 1500), // Reduced for efficiency
+              content: pageText.slice(0, 1500),
               hasHTTPS: security.isHttps,
               hasContactInfo: contact.hasContactPage || contact.hasEmail || contact.hasPhoneNumber,
               hasPolicies: policies.hasReturnPolicy || policies.hasPrivacyPolicy,
+              
+              // Enhanced context: Social media intelligence
+              socialMedia: socialMediaData,
+              
+              // Enhanced context: Domain intelligence from WHOIS
+              domainAge: domain.ageInDays,
+              domainAgeYears: domain.ageInDays ? Math.floor(domain.ageInDays / 365) : null,
+              domainStatus: domain.status,
+              domainRegistrar: domain.registrar,
             }));
+            
+            console.log('🧠 AI Context:', {
+              domainAge: domain.ageInDays ? `${domain.ageInDays} days` : 'Unknown',
+              registrar: domain.registrar || 'Unknown',
+              protectionFlags: domain.status?.length || 0,
+              socialMediaCount: socialMediaData.count,
+              hasContact: contact.hasContactPage || contact.hasEmail || contact.hasPhoneNumber,
+            });
           }
           
           // Run selected analyses in parallel
@@ -391,18 +434,27 @@ async function handleAnalyzePage(payload: any) {
       ...aiSignals,
     ];
     
-    const totalRiskScore = allSignals.reduce((sum, signal) => sum + signal.score, 0);
+    // Use smart risk calculator with deduplication and proper normalization
+    const riskAnalysis = RiskCalculator.calculateScore(allSignals);
+    const totalRiskScore = riskAnalysis.totalScore; // Guaranteed 0-100
+    const riskLevel = riskAnalysis.riskLevel;
     
-    let riskLevel: 'safe' | 'low' | 'medium' | 'high' | 'critical' = 'safe';
-    if (totalRiskScore >= 76) riskLevel = 'critical';
-    else if (totalRiskScore >= 51) riskLevel = 'high';
-    else if (totalRiskScore >= 26) riskLevel = 'medium';
-    else if (totalRiskScore >= 1) riskLevel = 'low';
+    console.log('📊 Risk Analysis Breakdown:', {
+      totalScore: `${riskAnalysis.totalScore}/100`,
+      riskLevel: riskAnalysis.riskLevel,
+      categories: {
+        security: `${riskAnalysis.breakdown.security.percentage}% (${riskAnalysis.breakdown.security.signals.length} signals)`,
+        legitimacy: `${riskAnalysis.breakdown.legitimacy.percentage}% (${riskAnalysis.breakdown.legitimacy.signals.length} signals)`,
+        darkPatterns: `${riskAnalysis.breakdown.darkPattern.percentage}% (${riskAnalysis.breakdown.darkPattern.signals.length} signals)`,
+        policies: `${riskAnalysis.breakdown.policy.percentage}% (${riskAnalysis.breakdown.policy.signals.length} signals)`,
+      },
+      topConcerns: riskAnalysis.topConcerns.map(s => `${s.reason} (${s.score})`),
+    });
     
     const analysis = {
       url: window.location.href,
       timestamp: Date.now(),
-      pageType, // Include page type for caching and context
+      pageType,
       security,
       domain,
       payment,
@@ -411,7 +463,10 @@ async function handleAnalyzePage(payload: any) {
       totalRiskScore,
       riskLevel,
       allSignals,
-      analysisVersion: '1.0.0',
+      // Enhanced risk analysis data
+      riskBreakdown: riskAnalysis.breakdown,
+      topConcerns: riskAnalysis.topConcerns,
+      analysisVersion: '2.0.0', // Updated version with smart scoring
       isEcommerceSite: true,
       aiEnabled: aiAvailable,
       aiSignalsCount: aiSignals.length,
@@ -432,23 +487,31 @@ async function handleAnalyzePage(payload: any) {
     // Cache the result immediately (before returning to popup)
     // This ensures cache persists even if popup closes during analysis
     try {
-      const { StorageService } = await import('../services/storage');
       await StorageService.cacheAnalysis(window.location.href, pageType, analysis);
       await StorageService.clearAnalysisProgress(window.location.href);
       console.log(`💾 Analysis cached: ${pageType}`);
     } catch (cacheError) {
       console.warn('⚠️ Failed to cache analysis:', cacheError);
+    } finally {
+      // Always release the lock, even if caching fails
+      await StorageService.releaseAnalysisLock(window.location.href, pageType);
     }
     
     return analysis;
   } catch (error) {
     console.error('❌ Analysis error:', error);
     
-    // Clear progress on error
+    // Detect page type for cleanup (in case error happened before detection)
+    const pageTypeResult = detectPageType();
+    const pageType = pageTypeResult.type;
+    
+    // Clear progress and release lock on error (robust cleanup)
     try {
-      const { StorageService } = await import('../services/storage');
       await StorageService.clearAnalysisProgress(window.location.href);
-    } catch {}
+      await StorageService.releaseAnalysisLock(window.location.href, pageType);
+    } catch (cleanupError) {
+      console.error('⚠️ Error during cleanup:', cleanupError);
+    }
     
     throw error;
   }
@@ -481,8 +544,155 @@ chrome.runtime.onMessage.addListener(
   })
 );
 
+// ============================================================================
+// URL CHANGE MONITORING (for SPAs)
+// ============================================================================
+
+let lastUrl = window.location.href;
+let urlCheckInterval: number | null = null;
+
+/**
+ * Monitor URL changes for Single Page Applications (SPAs)
+ * Many e-commerce sites use SPAs (React, Vue, etc.) that don't trigger page reloads
+ * We need to detect navigation and invalidate cache appropriately
+ */
+function startUrlChangeMonitoring() {
+  // Clear any existing interval
+  if (urlCheckInterval) {
+    clearInterval(urlCheckInterval);
+  }
+  
+  // Poll for URL changes every second
+  urlCheckInterval = window.setInterval(async () => {
+    const currentUrl = window.location.href;
+    
+    if (currentUrl !== lastUrl) {
+      console.log('🔄 URL changed (SPA navigation detected)');
+      console.log('   From:', lastUrl);
+      console.log('   To:', currentUrl);
+      
+      await handleUrlChange(lastUrl, currentUrl);
+      lastUrl = currentUrl;
+    }
+  }, 1000) as unknown as number;
+  
+  // Also listen for popstate (browser back/forward)
+  window.addEventListener('popstate', async () => {
+    console.log('⬅️ Browser navigation detected (back/forward)');
+    const currentUrl = window.location.href;
+    
+    if (currentUrl !== lastUrl) {
+      await handleUrlChange(lastUrl, currentUrl);
+      lastUrl = currentUrl;
+    }
+  });
+  
+  // Listen for pushState and replaceState (SPA routing)
+  const originalPushState = history.pushState;
+  const originalReplaceState = history.replaceState;
+  
+  history.pushState = function(...args) {
+    originalPushState.apply(history, args);
+    const currentUrl = window.location.href;
+    
+    if (currentUrl !== lastUrl) {
+      console.log('🔀 pushState detected');
+      handleUrlChange(lastUrl, currentUrl);
+      lastUrl = currentUrl;
+    }
+  };
+  
+  history.replaceState = function(...args) {
+    originalReplaceState.apply(history, args);
+    const currentUrl = window.location.href;
+    
+    if (currentUrl !== lastUrl) {
+      console.log('🔀 replaceState detected');
+      handleUrlChange(lastUrl, currentUrl);
+      lastUrl = currentUrl;
+    }
+  };
+  
+  console.log('👀 URL change monitoring started');
+}
+
+/**
+ * Handle URL change - invalidate cache if page changed significantly
+ */
+async function handleUrlChange(oldUrl: string, newUrl: string) {
+  try {
+    const { StorageService } = await import('../services/storage');
+    
+    const oldDomain = new URL(oldUrl).hostname.replace(/^www\./, '');
+    const newDomain = new URL(newUrl).hostname.replace(/^www\./, '');
+    
+    if (oldDomain !== newDomain) {
+      // Different domain: Clear all caches for the new domain
+      console.log('🌐 Domain changed, clearing cache for new domain');
+      await StorageService.clearCachedAnalysis(newUrl);
+    } else {
+      // Same domain: Check if page type changed
+      const oldPath = new URL(oldUrl).pathname;
+      const newPath = new URL(newUrl).pathname;
+      
+      // If paths are significantly different, likely a new page
+      if (oldPath !== newPath) {
+        const oldType = detectPageTypeFromUrl(oldUrl);
+        const newType = detectPageTypeFromUrl(newUrl);
+        
+        if (oldType !== newType) {
+          console.log(`📄 Page type changed: ${oldType} → ${newType}, clearing cache`);
+          await StorageService.clearCachedAnalysis(newUrl, newType);
+        } else {
+          // Same page type but different path (e.g., different product)
+          // Clear cache for this specific page type
+          console.log(`🔄 Path changed within same page type (${newType}), clearing cache`);
+          await StorageService.clearCachedAnalysis(newUrl, newType);
+        }
+      }
+    }
+  } catch (error) {
+    console.error('⚠️ Error handling URL change:', error);
+  }
+}
+
+/**
+ * Detect page type from URL (without needing DOM access)
+ */
+function detectPageTypeFromUrl(url: string): string {
+  const pathname = new URL(url).pathname.toLowerCase();
+  
+  if (pathname === '/' || pathname === '') return 'home';
+  if (pathname.includes('/product/') || pathname.includes('/item/') || pathname.includes('/dp/')) return 'product';
+  if (pathname.includes('/cart') || pathname.includes('/basket')) return 'cart';
+  if (pathname.includes('/checkout') || pathname.includes('/payment')) return 'checkout';
+  if (pathname.includes('/category') || pathname.includes('/shop') || pathname.includes('/browse')) return 'category';
+  if (pathname.includes('/privacy') || pathname.includes('/terms') || pathname.includes('/policy')) return 'policy';
+  
+  return 'other';
+}
+
+// Cleanup on page unload
+window.addEventListener('beforeunload', async () => {
+  try {
+    const { StorageService } = await import('../services/storage');
+    // Clear progress markers (analysis interrupted by navigation)
+    await StorageService.clearAnalysisProgress(window.location.href);
+    console.log('🧹 Cleaned up on page unload');
+  } catch (error) {
+    // Ignore errors during cleanup
+  }
+});
+
+// ============================================================================
+// INITIALIZATION
+// ============================================================================
+
 function initializeContentScript() {
   console.log('✅ Shop Sentinel initialized on:', window.location.href);
+  
+  // Start URL change monitoring for SPAs
+  startUrlChangeMonitoring();
 }
 
 if (document.readyState === 'loading') {

@@ -23,6 +23,21 @@ export interface DomainAnalysis {
   registrar: string | null;
   isSuspicious: boolean;
   signals: RiskSignal[];
+  // Additional WHOIS data for AI context (from apilayer.com API)
+  creationDate?: string | null;
+  expirationDate?: string | null;
+  updatedDate?: string | null;
+  dnssec?: string | null;
+  nameServers?: string[] | null;
+  registrantEmail?: string | null;
+  status?: string[] | null; // Domain status codes (important for trust)
+  whoisServer?: string | null;
+}
+
+export interface SocialMediaProfile {
+  platform: string;
+  url: string;
+  location: 'footer' | 'header' | 'body' | 'unknown';
 }
 
 export interface ContactAnalysis {
@@ -30,7 +45,8 @@ export interface ContactAnalysis {
   hasPhoneNumber: boolean;
   hasPhysicalAddress: boolean;
   hasEmail: boolean;
-  socialMediaLinks: string[];
+  socialMediaLinks: string[]; // Kept for backward compatibility
+  socialMediaProfiles: SocialMediaProfile[]; // Enhanced structured data
   signals: RiskSignal[];
 }
 

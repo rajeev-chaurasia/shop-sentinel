@@ -6,8 +6,9 @@ import {
 } from '../types/analysis';
 
 // Configuration
-const WHOIS_API_KEY = 'DUMMY_API_KEY_FOR_DEMO_PURPOSES_ONLY';
-const USE_MOCK_WHOIS = true;
+const WHOIS_API_KEY = 'MOCK_API_KEY_FOR_DEV_ONLY';
+const WHOIS_API_BASE_URL = 'https://api.apilayer.com/whois/query';
+const USE_MOCK_WHOIS = true; // Using real API
 const DOMAIN_AGE_THRESHOLD_DAYS = 180;
 
 // Scoring values
@@ -19,22 +20,43 @@ const SCORES = {
   IRREVERSIBLE_PAYMENTS_ONLY: 45,
 } as const;
 
-// Mock WHOIS data for development
+// Mock WHOIS data for development (matching real API structure)
 const MOCK_WHOIS_RESPONSES: Record<string, any> = {
   'amazon.com': {
     createdDate: '1994-11-01T05:00:00Z',
     registrar: 'MarkMonitor Inc.',
     ageInDays: 10950,
+    dnssec: 'unsigned',
+    expirationDate: '2025-10-30T04:00:00Z',
+    nameServers: ['NS1.AMAZON.COM', 'NS2.AMAZON.COM'],
+    emails: 'hostmaster@amazon.com',
+  },
+  'walmart.com': {
+    createdDate: '1995-07-14T04:00:00Z',
+    registrar: 'MarkMonitor Inc.',
+    ageInDays: 10976, // ~30 years
+    dnssec: 'unsigned',
+    expirationDate: '2026-07-13T04:00:00Z',
+    nameServers: ['NS1.WALMART.COM', 'NS2.WALMART.COM'],
+    emails: 'domain-contact@walmart.com',
   },
   'example.com': {
     createdDate: '1992-01-01T00:00:00Z',
     registrar: 'IANA',
     ageInDays: 12000,
+    dnssec: 'unsigned',
+    expirationDate: '2026-08-13T04:00:00Z',
+    nameServers: ['A.IANA-SERVERS.NET', 'B.IANA-SERVERS.NET'],
+    emails: 'reserved@iana.org',
   },
   'super-cheap-deals-2024.com': {
     createdDate: new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString(),
     registrar: 'Namecheap',
     ageInDays: 45,
+    dnssec: 'unsigned',
+    expirationDate: new Date(Date.now() + 320 * 24 * 60 * 60 * 1000).toISOString(),
+    nameServers: ['dns1.registrar-servers.com', 'dns2.registrar-servers.com'],
+    emails: 'abuse@namecheap.com',
   },
 };
 
@@ -116,62 +138,128 @@ export function checkMixedContent(): { hasMixedContent: boolean; signal?: RiskSi
 }
 
 /**
- * Check domain age using WhoisXMLAPI
+ * Check domain age using WHOIS API
  */
 export async function checkDomainAge(domain: string): Promise<Partial<DomainAnalysis>> {
   try {
+    // Strip www. prefix for WHOIS lookup
+    const cleanDomain = domain.replace(/^www\./i, '');
+    
     let whoisData;
 
     if (USE_MOCK_WHOIS) {
       // Use mock data for development
-      console.log('🔧 Using mock WHOIS data for:', domain);
-      whoisData = MOCK_WHOIS_RESPONSES[domain] || MOCK_WHOIS_RESPONSES['example.com'];
+      console.log('🔧 Using mock WHOIS data for:', cleanDomain);
+      whoisData = MOCK_WHOIS_RESPONSES[cleanDomain] || MOCK_WHOIS_RESPONSES['example.com'];
       // Simulate API delay
       await new Promise(resolve => setTimeout(resolve, 100));
     } else {
-      // Real API call
-      console.log('🌐 Fetching real WHOIS data for:', domain);
+      // Real API call using apilayer.com WHOIS API
+      console.log('🌐 Fetching real WHOIS data for:', cleanDomain);
+      
       const response = await fetch(
-        `https://www.whoisxmlapi.com/whoisserver/WhoisService?apiKey=${WHOIS_API_KEY}&domainName=${domain}&outputFormat=JSON`
+        `${WHOIS_API_BASE_URL}?domain=${cleanDomain}`,
+        {
+          method: 'GET',
+          redirect: 'follow',
+          headers: {
+            'apikey': WHOIS_API_KEY,
+          },
+        }
       );
 
       if (!response.ok) {
-        throw new Error(`WHOIS API error: ${response.status}`);
+        throw new Error(`WHOIS API error: ${response.status} ${response.statusText}`);
       }
 
       const data = await response.json();
       
-      if (data.ErrorMessage) {
-        throw new Error(data.ErrorMessage.msg);
+      // Check if API returned an error or no result
+      if (!data.result) {
+        throw new Error('No result found in WHOIS response');
       }
 
-      // Parse the response
-      const createdDate = data.WhoisRecord?.createdDate || data.WhoisRecord?.registryData?.createdDate;
+      const result = data.result;
+      
+      console.log('📥 Raw WHOIS response:', result);
+
+      // Parse the creation_date (format from API: "1997-09-15 04:00:00")
+      const createdDate = result.creation_date;
       
       if (!createdDate) {
-        console.warn('⚠️ No creation date found in WHOIS data');
+        console.warn('⚠️ No creation date found in WHOIS data for:', cleanDomain);
+        // Return partial data even without creation date
         return {
           domain,
           ageInDays: null,
-          registrar: data.WhoisRecord?.registrarName || null,
+          registrar: result.registrar || null,
           isSuspicious: false,
-          signals: [],
+          signals: [{
+            id: 'no-creation-date',
+            score: 0,
+            reason: 'Domain creation date not available',
+            severity: 'low',
+            category: 'legitimacy',
+            source: 'heuristic',
+            details: 'WHOIS data incomplete - this is not necessarily suspicious',
+          }],
+          creationDate: null,
+          expirationDate: result.expiration_date || null,
+          updatedDate: result.updated_date || null,
+          dnssec: result.dnssec || null,
+          nameServers: result.name_servers || null,
+          registrantEmail: result.emails || null,
+          status: result.status || null,
+          whoisServer: result.whois_server || null,
         };
       }
 
+      // Calculate domain age from creation_date
+      // Format: "1997-09-15 04:00:00" or "1997-09-15T04:00:00Z"
       const created = new Date(createdDate);
-      const ageInDays = Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24));
+      
+      // Validate date
+      if (isNaN(created.getTime())) {
+        console.warn('⚠️ Invalid creation date format:', createdDate);
+        throw new Error('Invalid date format in WHOIS response');
+      }
 
+      const ageInDays = Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24));
+      const ageInYears = Math.floor(ageInDays / 365);
+
+      // Extract all important fields from WHOIS response
       whoisData = {
         createdDate,
-        registrar: data.WhoisRecord?.registrarName || null,
+        registrar: result.registrar || null,
         ageInDays,
+        ageInYears,
+        dnssec: result.dnssec || null,
+        expirationDate: result.expiration_date || null,
+        updatedDate: result.updated_date || null,
+        emails: result.emails || null,
+        nameServers: result.name_servers || null,
+        status: result.status || null, // Important: clientDeleteProhibited, etc.
+        whoisServer: result.whois_server || null,
+        domainName: result.domain_name || null,
       };
+
+      console.log('📊 WHOIS data retrieved:', {
+        domain: result.domain_name || cleanDomain,
+        age: `${ageInDays} days (${ageInYears} years)`,
+        created: new Date(createdDate).toLocaleDateString(),
+        updated: whoisData.updatedDate ? new Date(whoisData.updatedDate).toLocaleDateString() : 'Unknown',
+        expires: whoisData.expirationDate ? new Date(whoisData.expirationDate).toLocaleDateString() : 'Unknown',
+        registrar: whoisData.registrar,
+        dnssec: whoisData.dnssec,
+        nameServers: whoisData.nameServers?.length || 0,
+        status: whoisData.status?.length || 0,
+        whoisServer: whoisData.whoisServer,
+      });
     }
 
     const signals: RiskSignal[] = [];
 
-    // Check if domain is too new
+    // Check if domain is too new (high risk)
     if (whoisData.ageInDays < DOMAIN_AGE_THRESHOLD_DAYS) {
       signals.push({
         id: 'new-domain',
@@ -184,12 +272,98 @@ export async function checkDomainAge(domain: string): Promise<Partial<DomainAnal
       });
     }
 
+    // Check DNSSEC status (unsigned domains are less secure)
+    if (whoisData.dnssec === 'unsigned') {
+      signals.push({
+        id: 'dnssec-unsigned',
+        score: 5,
+        reason: 'Domain does not use DNSSEC',
+        severity: 'low',
+        category: 'security',
+        source: 'heuristic',
+        details: 'DNSSEC adds an extra layer of security to prevent DNS spoofing attacks',
+      });
+    }
+
+    // Check expiration date (domains expiring soon might be abandoned)
+    if (whoisData.expirationDate) {
+      const expiresIn = Math.floor((new Date(whoisData.expirationDate).getTime() - Date.now()) / (1000 * 60 * 60 * 24));
+      
+      if (expiresIn < 30 && expiresIn > 0) {
+        signals.push({
+          id: 'domain-expiring-soon',
+          score: 15,
+          reason: `Domain expires in ${expiresIn} days`,
+          severity: 'medium',
+          category: 'legitimacy',
+          source: 'heuristic',
+          details: 'Legitimate businesses typically renew domains well in advance',
+        });
+      } else if (expiresIn < 0) {
+        signals.push({
+          id: 'domain-expired',
+          score: 40,
+          reason: 'Domain registration has expired',
+          severity: 'critical',
+          category: 'legitimacy',
+          source: 'heuristic',
+          details: 'This domain is no longer properly registered',
+        });
+      }
+    }
+
+    // Check domain status flags (important trust indicator)
+    // Domains with protection flags (clientDeleteProhibited, etc.) are more legitimate
+    if (whoisData.status) {
+      // WHOIS API can return status as string, array, or null - normalize to array
+      let statusArray: string[] = [];
+      
+      if (typeof whoisData.status === 'string') {
+        // Single status or comma/space separated statuses
+        statusArray = whoisData.status
+          .split(/[,\s]+/)
+          .map((s: string) => s.trim())
+          .filter((s: string) => s.length > 0);
+      } else if (Array.isArray(whoisData.status)) {
+        statusArray = whoisData.status;
+      }
+      
+      if (statusArray.length > 0) {
+        const protectionFlags = statusArray.filter((status: string) => 
+          status.includes('DeleteProhibited') || 
+          status.includes('TransferProhibited') ||
+          status.includes('UpdateProhibited')
+        );
+        
+        // Domains with NO protection flags are suspicious for established sites
+        if (protectionFlags.length === 0 && whoisData.ageInDays && whoisData.ageInDays > 30) {
+          signals.push({
+            id: 'no-domain-protection',
+            score: 10,
+            reason: 'Domain lacks standard protection status flags',
+            severity: 'low',
+            category: 'legitimacy',
+            source: 'heuristic',
+            details: 'Legitimate businesses typically enable transfer and deletion protection',
+          });
+        }
+      }
+    }
+
     return {
       domain,
       ageInDays: whoisData.ageInDays,
       registrar: whoisData.registrar,
       isSuspicious: whoisData.ageInDays < DOMAIN_AGE_THRESHOLD_DAYS,
       signals,
+      creationDate: whoisData.createdDate,
+      expirationDate: whoisData.expirationDate,
+      updatedDate: whoisData.updatedDate,
+      dnssec: whoisData.dnssec,
+      nameServers: whoisData.nameServers,
+      registrantEmail: whoisData.emails,
+      status: whoisData.status,
+      whoisServer: whoisData.whoisServer,
     };
   } catch (error) {
     console.error('❌ Error checking domain age:', error);
@@ -207,8 +381,16 @@ export async function checkDomainAge(domain: string): Promise<Partial<DomainAnal
         severity: 'low',
         category: 'legitimacy',
         source: 'heuristic',
-        details: 'WHOIS lookup failed - this is not necessarily suspicious',
+        details: `WHOIS lookup failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
       }],
+      creationDate: null,
+      expirationDate: null,
+      updatedDate: null,
+      dnssec: null,
+      nameServers: null,
+      registrantEmail: null,
+      status: null,
+      whoisServer: null,
     };
   }
 }
@@ -310,36 +492,56 @@ function levenshteinDistance(str1: string, str2: string): number {
 
 /**
  * Check for payment methods on the page
+ * Uses word boundary regex patterns to avoid false positives
  */
 export function checkPaymentMethods(): PaymentAnalysis {
   const bodyText = document.body.innerText.toLowerCase();
   const signals: RiskSignal[] = [];
 
-  // Keywords for irreversible payment methods
-  const irreversibleKeywords = [
-    'cryptocurrency', 'bitcoin', 'crypto', 'btc', 'ethereum', 'eth',
-    'wire transfer', 'western union', 'moneygram',
-    'zelle only', 'cash app only', 'venmo only',
+  // Regex patterns with word boundaries for precise matching
+  const irreversiblePatterns = [
+    { pattern: /\bcryptocurrency\b/i, name: 'cryptocurrency' },
+    { pattern: /\bbitcoin\b/i, name: 'bitcoin' },
+    { pattern: /\bcrypto\s+payment\b/i, name: 'crypto payment' },
+    { pattern: /\bbtc\b/i, name: 'btc' },
+    { pattern: /\bethereum\b/i, name: 'ethereum' },
+    { pattern: /\bwire\s+transfer\b/i, name: 'wire transfer' },
+    { pattern: /\bwestern\s+union\b/i, name: 'western union' },
+    { pattern: /\bmoneygram\b/i, name: 'moneygram' },
+    { pattern: /\b(zelle|cashapp|cash\s+app|venmo)\s+only\b/i, name: 'peer-to-peer only' },
   ];
 
-  // Keywords for reversible (safer) payment methods
-  const reversibleKeywords = [
-    'credit card', 'visa', 'mastercard', 'amex', 'american express',
-    'paypal', 'stripe', 'shop pay', 'apple pay', 'google pay',
+  // Reversible payment methods (credit cards, digital wallets with buyer protection)
+  const reversiblePatterns = [
+    { pattern: /\bcredit\s+card\b/i, name: 'credit card' },
+    { pattern: /\bdebit\s+card\b/i, name: 'debit card' },
+    { pattern: /\bvisa\b/i, name: 'visa' },
+    { pattern: /\bmastercard\b/i, name: 'mastercard' },
+    { pattern: /\b(amex|american\s+express)\b/i, name: 'american express' },
+    { pattern: /\bdiscover\b/i, name: 'discover' },
+    { pattern: /\bpaypal\b/i, name: 'paypal' },
+    { pattern: /\bstripe\b/i, name: 'stripe' },
+    { pattern: /\bshop\s+pay\b/i, name: 'shop pay' },
+    { pattern: /\bapple\s+pay\b/i, name: 'apple pay' },
+    { pattern: /\bgoogle\s+pay\b/i, name: 'google pay' },
+    { pattern: /\bklarna\b/i, name: 'klarna' },
+    { pattern: /\bafterpay\b/i, name: 'afterpay' },
   ];
 
   const foundIrreversible: string[] = [];
   const foundReversible: string[] = [];
 
-  irreversibleKeywords.forEach(keyword => {
-    if (bodyText.includes(keyword)) {
-      foundIrreversible.push(keyword);
+  // Check for irreversible payment methods using regex
+  irreversiblePatterns.forEach(({ pattern, name }) => {
+    if (pattern.test(bodyText)) {
+      foundIrreversible.push(name);
     }
   });
 
-  reversibleKeywords.forEach(keyword => {
-    if (bodyText.includes(keyword)) {
-      foundReversible.push(keyword);
+  // Check for reversible payment methods using regex
+  reversiblePatterns.forEach(({ pattern, name }) => {
+    if (pattern.test(bodyText)) {
+      foundReversible.push(name);
     }
   });
 
@@ -350,10 +552,10 @@ export function checkPaymentMethods(): PaymentAnalysis {
       id: 'irreversible-payments-only',
       score: SCORES.IRREVERSIBLE_PAYMENTS_ONLY,
       reason: 'Only irreversible payment methods detected',
-      severity: 'critical',
+      severity: 'medium',
       category: 'security',
       source: 'heuristic',
-      details: `Found: ${foundIrreversible.join(', ')}. Scam sites often only accept irreversible payments.`,
+      details: `Found: ${foundIrreversible.join(', ')}. Irreversible payments offer less buyer protection.`,
     });
   }
 

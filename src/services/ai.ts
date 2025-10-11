@@ -252,7 +252,7 @@ No markdown code blocks, no explanations, JSON only.`;
     }
 
     /**
-     * Analyze overall page legitimacy
+     * Analyze overall page legitimacy with full context
      */
     static async analyzeLegitimacy(pageData: {
         url: string;
@@ -261,6 +261,20 @@ No markdown code blocks, no explanations, JSON only.`;
         hasHTTPS: boolean;
         hasContactInfo: boolean;
         hasPolicies: boolean;
+        // Enhanced social media context
+        socialMedia?: {
+            facebook?: string | null;
+            twitter?: string | null;
+            instagram?: string | null;
+            linkedin?: string | null;
+            youtube?: string | null;
+            count?: number;
+        };
+        // Domain intelligence from WHOIS
+        domainAge?: number | null;
+        domainAgeYears?: number | null;
+        domainStatus?: string[] | null;
+        domainRegistrar?: string | null;
     }): Promise<RiskSignal[]> {
         try {
             const initialized = await this.initializeSession();
@@ -269,35 +283,83 @@ No markdown code blocks, no explanations, JSON only.`;
                 return [];
             }
 
+            // Build context-aware prompt with all available intelligence
+            const domainInfo = pageData.domainAge !== undefined && pageData.domainAge !== null
+                ? `Domain Age: ${pageData.domainAge} days (${pageData.domainAgeYears || Math.floor(pageData.domainAge / 365)} years)
+Domain Registrar: ${pageData.domainRegistrar || 'Unknown'}
+Domain Protection: ${pageData.domainStatus?.length || 0} status flags${pageData.domainStatus && pageData.domainStatus.length > 0 ? ` (${pageData.domainStatus.slice(0, 3).join(', ')})` : ''}`
+                : 'Domain Age: Unknown';
+
+            const socialInfo = pageData.socialMedia
+                ? `Social Media Links Found:
+- Facebook: ${pageData.socialMedia.facebook ? '✓ Found' : '✗ Not found'}
+- Twitter/X: ${pageData.socialMedia.twitter ? '✓ Found' : '✗ Not found'}
+- Instagram: ${pageData.socialMedia.instagram ? '✓ Found' : '✗ Not found'}
+- LinkedIn: ${pageData.socialMedia.linkedin ? '✓ Found' : '✗ Not found'}
+- Total Social Platforms: ${pageData.socialMedia.count || 0}`
+                : 'Social Media: Unknown';
+
             const prompt = `Evaluate the legitimacy of this e-commerce website:
 
 URL: ${pageData.url}
 Title: ${pageData.title}
-HTTPS: ${pageData.hasHTTPS ? 'Yes' : 'No'}
-Contact Info: ${pageData.hasContactInfo ? 'Found' : 'Missing'}
-Policies: ${pageData.hasPolicies ? 'Present' : 'Absent'}
-Content Sample: ${pageData.content.slice(0, 500)}
 
-Identify legitimacy concerns such as:
-- Suspicious domain or branding
-- Poor grammar or spelling
-- Missing contact information
-- Lack of trust signals
-- Unprofessional design elements
+🔒 Security:
+- HTTPS: ${pageData.hasHTTPS ? 'Yes' : 'No'}
+- Contact Info: ${pageData.hasContactInfo ? 'Found' : 'Missing'}
+- Policies: ${pageData.hasPolicies ? 'Present' : 'Absent'}
 
-IMPORTANT: Return ONLY valid JSON array, no other text.
+🌐 Domain Intelligence:
+${domainInfo}
+
+📱 ${socialInfo}
+
+📄 Content Sample: ${pageData.content.slice(0, 400)}
+
+⭐ CRITICAL CONTEXT-AWARE RULES:
+
+1. ESTABLISHED BUSINESSES (Domain age >5 years + 3+ protection flags):
+   - Missing social media links = LOW concern (they exist but may not be linked on all pages)
+   - These are proven legitimate businesses - focus on other signals
+   - Examples: Walmart, Amazon, Target are 20-30 year old domains
+
+2. NEW BUSINESSES (Domain age <180 days + 0-1 protection flags):
+   - Missing social media = MEDIUM-HIGH concern
+   - Combined with missing contact info = VERY suspicious
+   - New sites should be establishing social presence
+
+3. PROTECTION FLAGS ARE KEY TRUST INDICATORS:
+   - 6 flags (clientDeleteProhibited, etc.) = Maximum security = Very legitimate
+   - 3-5 flags = Good security posture = Likely legitimate
+   - 0-1 flags = Minimal protection = Requires extra scrutiny
+
+4. REGISTRAR REPUTATION:
+   - MarkMonitor, CSC, Brand Registry = Premium (used by Fortune 500)
+   - GoDaddy, Namecheap, Network Solutions = Standard but legitimate
+   - Privacy-protected registrars = Needs extra verification
+
+5. HOLISTIC ASSESSMENT:
+   - Don't focus on single missing element
+   - Weight domain age + protection flags heavily
+   - Recognizable brand names (in URL/title) are strong positive signals
+   - Consider if site NEEDS social media (B2B enterprise vs B2C retail)
+
+TASK: Identify legitimacy concerns based on the COMPLETE profile above.
+
+Return ONLY valid JSON array, no other text.
 Format:
 [
   {
     "concern": "issue name",
-    "severity": "low",
-    "score": 5,
+    "severity": "low"|"medium"|"high",
+    "score": 1-50,
     "reason": "description",
     "details": "specific evidence"
   }
 ]
 
-If site appears legitimate, return: []
+If domain profile shows strong trust signals (old age + protection flags + contact info), return: []
+If domain is suspicious (new + no protection + missing info + no social), flag concerns.
 
 No markdown, no explanations, JSON only.`;
 

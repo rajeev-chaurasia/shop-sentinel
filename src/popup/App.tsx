@@ -71,6 +71,51 @@ function App() {
     }
   }, [isLoading]);
 
+  // Monitor cross-tab storage changes for live updates
+  useEffect(() => {
+    const handleStorageChange = async (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
+      if (areaName !== 'local') return;
+      
+      try {
+        const tab = await MessagingService.getActiveTab();
+        if (!tab?.url) return;
+        
+        const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+        if (!pageInfoResponse.success || !pageInfoResponse.data) return;
+        
+        const pageType = pageInfoResponse.data.pageType || 'other';
+        const cacheKey = `analysis_${new URL(tab.url).hostname.replace(/^www\./, '')}:${pageType}`;
+        
+        // Check if analysis completed in another tab
+        if (changes[cacheKey] && changes[cacheKey].newValue) {
+          console.log('📡 Analysis completed in another tab, updating...');
+          const cached = changes[cacheKey].newValue as any;
+          
+          if (cached.result && !cached.expiresAt) {
+            // Old format, just use result
+            setAnalysisResult(cached);
+          } else if (cached.result && Date.now() < cached.expiresAt) {
+            // New format with expiration
+            setAnalysisResult(cached.result);
+          }
+          
+          setIsFromCache(true);
+          if (isLoading) {
+            completeAnalysis();
+          }
+        }
+      } catch (error) {
+        console.error('Error handling storage change:', error);
+      }
+    };
+    
+    chrome.storage.onChanged.addListener(handleStorageChange);
+    
+    return () => {
+      chrome.storage.onChanged.removeListener(handleStorageChange);
+    };
+  }, [isLoading]);
+
   const initializePopup = async () => {
     await testConnection();
     await loadCachedAnalysis();
@@ -92,15 +137,7 @@ function App() {
       const tab = await MessagingService.getActiveTab();
       if (!tab?.url) return;
 
-      // Check if analysis is in progress
-      const inProgress = await StorageService.isAnalysisInProgress(tab.url);
-      if (inProgress) {
-        console.log('⏳ Analysis in progress, entering loading state');
-        startAnalysis(tab.url);
-        return;
-      }
-
-      // Get current page type from content script
+      // Get current page type from content script FIRST
       console.log('🔍 Getting page type for:', tab.url);
       const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
       
@@ -112,6 +149,14 @@ function App() {
       const pageType = pageInfoResponse.data.pageType || 'other';
       const confidence = pageInfoResponse.data.pageTypeConfidence || 0;
       console.log(`📄 Detected page type: ${pageType} (confidence: ${confidence}%)`);
+
+      // Check if analysis is in progress for THIS specific page type
+      const inProgress = await StorageService.isAnalysisInProgress(tab.url, pageType);
+      if (inProgress) {
+        console.log(`⏳ Analysis in progress for ${pageType}, entering loading state`);
+        startAnalysis(tab.url);
+        return;
+      }
 
       // Check cache only for this specific page type
       console.log(`🔍 Checking cache for: ${tab.url} (${pageType})`);

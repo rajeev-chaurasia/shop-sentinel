@@ -13,8 +13,16 @@ interface AnalysisProgress {
   aiEnabled: boolean;
 }
 
-const CACHE_DURATION_MS = 15 * 60 * 1000;
-const PROGRESS_TIMEOUT_MS = 60 * 1000;
+interface AnalysisLock {
+  acquiredAt: number;
+  tabId: string;
+  url: string;
+  pageType: string;
+}
+
+const CACHE_DURATION_MS = 15 * 60 * 1000;      // 15 minutes
+const PROGRESS_TIMEOUT_MS = 60 * 1000;         // 60 seconds
+const LOCK_TIMEOUT_MS = 90 * 1000;             // 90 seconds (longer than analysis typically takes)
 
 export const StorageService = {
   /**
@@ -230,6 +238,63 @@ export const StorageService = {
       }
     } catch (error) {
       console.error('Error clearing progress:', error);
+      return false;
+    }
+  },
+
+  /**
+   * Try to acquire a distributed lock for analysis
+   * Prevents multiple tabs from analyzing the same page simultaneously
+   * @returns true if lock acquired, false if already locked by another tab
+   */
+  async acquireAnalysisLock(url: string, pageType: string): Promise<boolean> {
+    const lockKey = `lock_${this.generateCacheKey(url, pageType)}`;
+    const existingLock = await this.get<AnalysisLock>(lockKey);
+    
+    // Check if lock exists and is still valid
+    if (existingLock && Date.now() - existingLock.acquiredAt < LOCK_TIMEOUT_MS) {
+      console.log(`🔒 Analysis lock held by another tab for ${url} (${pageType})`);
+      return false;
+    }
+    
+    // Acquire lock with unique tab ID
+    const lock: AnalysisLock = {
+      acquiredAt: Date.now(),
+      tabId: crypto.randomUUID(), // Unique ID for this analysis session
+      url,
+      pageType,
+    };
+    
+    await this.set(lockKey, lock);
+    console.log(`🔓 Analysis lock acquired for ${url} (${pageType})`);
+    return true;
+  },
+
+  /**
+   * Release analysis lock
+   */
+  async releaseAnalysisLock(url: string, pageType: string): Promise<boolean> {
+    const lockKey = `lock_${this.generateCacheKey(url, pageType)}`;
+    console.log(`🔓 Releasing analysis lock for ${url} (${pageType})`);
+    return this.remove(lockKey);
+  },
+
+  /**
+   * Force clear all locks (for cleanup/debugging)
+   */
+  async clearAllLocks(): Promise<boolean> {
+    try {
+      const all = await chrome.storage.local.get(null);
+      const lockKeys = Object.keys(all).filter(key => key.startsWith('lock_'));
+      
+      if (lockKeys.length > 0) {
+        await chrome.storage.local.remove(lockKeys);
+        console.log(`🧹 Cleared ${lockKeys.length} stale locks`);
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Error clearing locks:', error);
       return false;
     }
   },
