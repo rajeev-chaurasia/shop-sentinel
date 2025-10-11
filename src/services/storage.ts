@@ -122,38 +122,40 @@ export const StorageService = {
   },
 
   /**
-   * Clear cached analysis for a specific URL
+   * Clear cached analysis for a specific URL and page type
+   * If pageType not provided, clears all page type caches for the URL
    */
-  async clearCachedAnalysis(url: string): Promise<boolean> {
-    const cacheKey = `analysis_${this.normalizeUrl(url)}`;
-    console.log(`🧹 Clearing cache for ${url}`);
-    return this.remove(cacheKey);
-  },
-
-  /**
-   * Normalize URL for consistent cache keys (removes query params, hash, trailing slash)
-   */
-  normalizeUrl(url: string): string {
+  async clearCachedAnalysis(url: string, pageType?: string): Promise<boolean> {
     try {
       const parsed = new URL(url);
-      // Use protocol + hostname + pathname (no query/hash)
-      let normalized = `${parsed.protocol}//${parsed.hostname}${parsed.pathname}`;
-      // Remove trailing slash
-      if (normalized.endsWith('/') && normalized.length > 1) {
-        normalized = normalized.slice(0, -1);
+      const domain = parsed.hostname.replace(/^www\./, '');
+      
+      if (pageType) {
+        // Clear specific page type cache
+        const cacheKey = this.generateCacheKey(url, pageType);
+        console.log(`🧹 Clearing cache for ${url} (${pageType})`);
+        return this.remove(cacheKey);
+      } else {
+        // Clear all page types for this URL
+        const pageTypes = ['home', 'product', 'category', 'checkout', 'cart', 'policy', 'other'];
+        const promises = pageTypes.map(type => 
+          this.remove(`analysis_${domain}:${type}`)
+        );
+        await Promise.all(promises);
+        console.log(`🧹 Cleared all caches for ${url}`);
+        return true;
       }
-      return normalized;
-    } catch {
-      // If URL parsing fails, just use the string
-      return url;
+    } catch (error) {
+      console.error('Error clearing cache:', error);
+      return false;
     }
   },
 
   /**
-   * Mark analysis as in progress for a URL
+   * Mark analysis as in progress for a URL with consistent key format
    */
   async setAnalysisInProgress(url: string, pageType: string, aiEnabled: boolean): Promise<boolean> {
-    const progressKey = `progress_${this.normalizeUrl(url)}`;
+    const progressKey = `progress_${this.generateCacheKey(url, pageType)}`;
     const progress: AnalysisProgress = {
       url,
       pageType,
@@ -165,33 +167,71 @@ export const StorageService = {
   },
 
   /**
-   * Check if analysis is in progress for a URL
+   * Check if analysis is in progress for a URL and page type
    */
-  async isAnalysisInProgress(url: string): Promise<boolean> {
-    const progressKey = `progress_${this.normalizeUrl(url)}`;
-    const progress = await this.get<AnalysisProgress>(progressKey);
-    
-    if (!progress) {
+  async isAnalysisInProgress(url: string, pageType?: string): Promise<boolean> {
+    try {
+      if (pageType) {
+        const progressKey = `progress_${this.generateCacheKey(url, pageType)}`;
+        const progress = await this.get<AnalysisProgress>(progressKey);
+        
+        if (!progress) {
+          return false;
+        }
+        
+        // Check if stale (more than 1 minute old)
+        if (Date.now() - progress.startedAt > PROGRESS_TIMEOUT_MS) {
+          console.log(`🕐 Analysis progress stale, clearing: ${url} (${pageType})`);
+          await this.remove(progressKey);
+          return false;
+        }
+        
+        return true;
+      } else {
+        // Check if any page type is in progress
+        const parsed = new URL(url);
+        const domain = parsed.hostname.replace(/^www\./, '');
+        const pageTypes = ['home', 'product', 'category', 'checkout', 'cart', 'policy', 'other'];
+        
+        for (const type of pageTypes) {
+          const progressKey = `progress_${domain}:${type}`;
+          const progress = await this.get<AnalysisProgress>(progressKey);
+          if (progress && Date.now() - progress.startedAt <= PROGRESS_TIMEOUT_MS) {
+            return true;
+          }
+        }
+        return false;
+      }
+    } catch {
       return false;
     }
-    
-    // Check if stale (more than 1 minute old)
-    if (Date.now() - progress.startedAt > PROGRESS_TIMEOUT_MS) {
-      console.log(`🕐 Analysis progress stale, clearing: ${url}`);
-      await this.remove(progressKey);
-      return false;
-    }
-    
-    return true;
   },
 
   /**
    * Clear analysis progress marker
    */
-  async clearAnalysisProgress(url: string): Promise<boolean> {
-    const progressKey = `progress_${this.normalizeUrl(url)}`;
-    console.log(`✅ Clearing analysis progress: ${url}`);
-    return this.remove(progressKey);
+  async clearAnalysisProgress(url: string, pageType?: string): Promise<boolean> {
+    try {
+      if (pageType) {
+        const progressKey = `progress_${this.generateCacheKey(url, pageType)}`;
+        console.log(`✅ Clearing analysis progress: ${url} (${pageType})`);
+        return this.remove(progressKey);
+      } else {
+        // Clear all page types
+        const parsed = new URL(url);
+        const domain = parsed.hostname.replace(/^www\./, '');
+        const pageTypes = ['home', 'product', 'category', 'checkout', 'cart', 'policy', 'other'];
+        const promises = pageTypes.map(type => 
+          this.remove(`progress_${domain}:${type}`)
+        );
+        await Promise.all(promises);
+        console.log(`✅ Cleared all progress markers for ${url}`);
+        return true;
+      }
+    } catch (error) {
+      console.error('Error clearing progress:', error);
+      return false;
+    }
   },
 };
 
