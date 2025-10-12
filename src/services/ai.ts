@@ -76,10 +76,45 @@ export class AIService {
 
             const capabilities = await LanguageModel.availability();
             console.log('🤖 Chrome AI Capabilities:', capabilities);
+            console.log('🔍 Capabilities type:', typeof capabilities);
+            
+            // Handle different possible structures of capabilities
+            let availabilityStatus;
+            if (typeof capabilities === 'string') {
+                // capabilities is directly a string
+                availabilityStatus = capabilities;
+                console.log('🔍 Available status (string):', availabilityStatus);
+            } else if (typeof capabilities === 'object' && capabilities !== null) {
+                // capabilities is an object with an available property
+                availabilityStatus = capabilities.available;
+                console.log('🔍 Available status (object):', availabilityStatus);
+                console.log('🔍 Available type:', typeof availabilityStatus);
+            } else {
+                // Fallback: assume available if we can't determine
+                availabilityStatus = 'readily';
+                console.log('⚠️ Unknown capabilities structure, assuming readily available');
+            }
+            
+            // Check if AI is available (any status other than 'unavailable')
+            if (availabilityStatus === 'unavailable') {
+                const error = 'AI not available on this device';
+                console.log('❌', error);
+                console.log('💡 Your device may not meet the requirements');
+                this.isAvailable = false;
+                return {
+                    available: false,
+                    status: 'unavailable',
+                    error,
+                    userMessage: 'Your device does not support Chrome AI'
+                };
+            }
 
-            switch (capabilities.available) {
+            // If we get here, AI should be available in some form
+            this.isAvailable = true;
+            
+            switch (availabilityStatus) {
                 case 'readily':
-                    this.isAvailable = true;
+                case 'available': // Handle direct 'available' status from newer API
                     return {
                         available: true,
                         status: 'ready',
@@ -88,7 +123,6 @@ export class AIService {
 
                 case 'after-download':
                     console.log('⏳ AI model downloaded but needs initialization');
-                    this.isAvailable = true;
                     return {
                         available: true,
                         status: 'downloadable',
@@ -97,24 +131,19 @@ export class AIService {
 
                 case 'downloadable':
                     console.log('⏳ AI model needs to be downloaded');
-                    this.isAvailable = true;
                     return {
                         available: true,
                         status: 'downloadable',
                         userMessage: 'AI model will download on first use (may take time)'
                     };
 
-                case 'unavailable':
                 default:
-                    const error = 'AI not available on this device';
-                    console.log('❌', error);
-                    console.log('💡 Your device may not meet the requirements');
-                    this.isAvailable = false;
+                    // Handle unknown status - assume available
+                    console.log('⚠️ Unknown AI availability status:', availabilityStatus, 'assuming available');
                     return {
-                        available: false,
-                        status: 'unavailable',
-                        error,
-                        userMessage: 'Your device does not support Chrome AI'
+                        available: true,
+                        status: 'ready',
+                        userMessage: `AI available with status: ${availabilityStatus}`
                     };
             }
         } catch (error) {
@@ -150,8 +179,9 @@ export class AIService {
                 return true;
             }
 
-            const available = await this.checkAvailability();
-            if (!available || typeof LanguageModel === 'undefined') {
+            const availabilityStatus = await this.checkAvailability();
+            if (!availabilityStatus.available || typeof LanguageModel === 'undefined') {
+                console.log('⚠️ AI not available for session initialization:', availabilityStatus);
                 return false;
             }
 
@@ -166,6 +196,8 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
             console.log('🔄 Creating new AI session...');
 
             const capabilities = await LanguageModel.availability();
+            console.log('🔧 Session creation capabilities:', capabilities);
+            
             // Model is already downloaded if readily available or after-download (cached)
             const isAlreadyDownloaded = capabilities.available === 'readily' || capabilities.available === 'after-download';
 
@@ -190,13 +222,16 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
                 },
             });
 
-            if (isAlreadyDownloaded) {
-                console.log('✅ AI session created (model already downloaded)');
-            } else {
-                console.log('✅ AI session initialized (downloaded and will persist)');
-            }
+            console.log('✅ AI session created successfully');
             return true;
         } catch (error: any) {
+            console.error('❌ Error initializing AI session:', error);
+            console.error('❌ Error details:', {
+                name: error.name,
+                message: error.message,
+                stack: error.stack?.split('\n')[0]
+            });
+            
             // Handle "NotAllowedError" specifically - model is downloadable but needs user gesture
             if (error.name === 'NotAllowedError') {
                 console.warn('⚠️ AI model download requires user interaction. Model will download when user clicks "Analyze"');
@@ -204,7 +239,6 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
                 return false;
             }
 
-            console.error('❌ Error initializing AI session:', error);
             this.session = null;
             return false;
         }
@@ -241,7 +275,7 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
 
             // Enhanced prompt with better context and stricter validation
             const prompt = this.constructDarkPatternPrompt(pageContent);
-            const response = await this.session.prompt(prompt);
+            const response = await this.session.prompt(prompt, { language: 'en' });
             
             console.log('🤖 AI Dark Pattern Analysis Response:', response?.slice(0, 200) + '...');
 
@@ -427,7 +461,7 @@ Domain Protection: ${pageData.domainStatus?.length || 0} status flags${pageData.
             // Enhanced legitimacy analysis prompt with better structure
             const prompt = this.constructLegitimacyPrompt(pageData, domainInfo, socialInfo);
 
-            const response = await this.session.prompt(prompt);
+            const response = await this.session.prompt(prompt, { language: 'en' });
             console.log('🤖 AI Legitimacy Analysis:', response);
 
             const concerns = this.parseAIResponse(response);
@@ -591,22 +625,43 @@ JSON only, no markdown, no explanations.`;
             cleaned = cleaned.replace(/```\s*/g, '');
             cleaned = cleaned.trim();
 
+            console.log('🔍 Parsing AI response (length:', cleaned.length, ')');
+            console.log('🔍 Response preview:', cleaned.slice(0, 300));
+
             // Try direct JSON parse first
             try {
-                return JSON.parse(cleaned);
-            } catch {
-                // If that fails, try to extract JSON
+                const result = JSON.parse(cleaned);
+                console.log('✅ Direct JSON parse successful');
+                return result;
+            } catch (directError: any) {
+                console.log('⚠️ Direct JSON parse failed:', directError.message);
+                
+                // If that fails, try to extract JSON from the response
                 const jsonMatch = cleaned.match(/\[[\s\S]*\]|\{[\s\S]*\}/);
                 if (jsonMatch) {
                     let extracted = jsonMatch[0];
+                    console.log('🔍 Extracted JSON (length:', extracted.length, ')');
+                    console.log('🔍 Extracted preview:', extracted.slice(0, 200));
 
                     // Fix common JSON issues
                     // Remove trailing commas before closing brackets
                     extracted = extracted.replace(/,(\s*[}\]])/g, '$1');
                     // Fix unquoted keys (basic attempt)
                     extracted = extracted.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
+                    // Fix incomplete strings (truncate at first unclosed quote)
+                    extracted = this.fixIncompleteJson(extracted);
 
-                    return JSON.parse(extracted);
+                    try {
+                        const result = JSON.parse(extracted);
+                        console.log('✅ Extracted JSON parse successful');
+                        return result;
+                    } catch (extractError: any) {
+                        console.log('⚠️ Extracted JSON parse failed:', extractError.message);
+                        console.log('🔍 Problematic JSON:', extracted.slice(0, 500));
+                        
+                        // Try to salvage partial JSON by finding complete objects
+                        return this.salvagePartialJson(extracted);
+                    }
                 }
             }
 
@@ -617,6 +672,95 @@ JSON only, no markdown, no explanations.`;
         } catch (error) {
             console.error('❌ Error parsing AI response:', error);
             console.error('Response that failed:', response.slice(0, 500));
+            return [];
+        }
+    }
+
+    /**
+     * Fix incomplete JSON by truncating at first unclosed quote or bracket
+     */
+    private static fixIncompleteJson(json: string): string {
+        try {
+            // Find the last complete object/array
+            let depth = 0;
+            let inString = false;
+            let escapeNext = false;
+            let lastValidPos = -1;
+
+            for (let i = 0; i < json.length; i++) {
+                const char = json[i];
+                
+                if (escapeNext) {
+                    escapeNext = false;
+                    continue;
+                }
+
+                if (char === '\\') {
+                    escapeNext = true;
+                    continue;
+                }
+
+                if (char === '"' && !escapeNext) {
+                    inString = !inString;
+                    continue;
+                }
+
+                if (!inString) {
+                    if (char === '{' || char === '[') {
+                        depth++;
+                    } else if (char === '}' || char === ']') {
+                        depth--;
+                        if (depth === 0) {
+                            lastValidPos = i;
+                        }
+                    }
+                }
+            }
+
+            if (lastValidPos > 0) {
+                console.log('🔧 Truncating incomplete JSON at position:', lastValidPos);
+                return json.slice(0, lastValidPos + 1);
+            }
+
+            return json;
+        } catch (error: any) {
+            console.log('⚠️ Error fixing incomplete JSON:', error.message);
+            return json;
+        }
+    }
+
+    /**
+     * Try to salvage partial JSON by extracting complete objects
+     */
+    private static salvagePartialJson(json: string): any[] {
+        try {
+            const results: any[] = [];
+            
+            // Look for complete JSON objects in the string
+            const objectRegex = /\{[^{}]*"pattern"[^{}]*\}/g;
+            let match;
+            
+            while ((match = objectRegex.exec(json)) !== null) {
+                try {
+                    const obj = JSON.parse(match[0]);
+                    if (obj.pattern && typeof obj.pattern === 'string') {
+                        results.push(obj);
+                    }
+                } catch (e) {
+                    // Skip invalid objects
+                    continue;
+                }
+            }
+
+            if (results.length > 0) {
+                console.log('🔧 Salvaged', results.length, 'complete objects from partial JSON');
+                return results;
+            }
+
+            console.log('⚠️ Could not salvage any complete objects');
+            return [];
+        } catch (error: any) {
+            console.log('⚠️ Error salvaging partial JSON:', error.message);
             return [];
         }
     }
