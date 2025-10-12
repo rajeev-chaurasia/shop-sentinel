@@ -44,6 +44,23 @@ export class FingerprintService {
   private static readonly MIN_TEXT_LENGTH = 1000;
   private static readonly MAX_BRAND_LENGTH = 50;
 
+  // Trusted domains that are less likely to be compromised
+  private static readonly TRUSTED_DOMAINS = new Set([
+    'amazon.com', 'walmart.com', 'target.com', 'bestbuy.com', 'home-depot.com',
+    'myntra.com', 'flipkart.com', 'ajio.com', 'nykaa.com', 'firstcry.com',
+    'paytm.com', 'phonepe.com', 'gpay.com', 'paypal.com', 'stripe.com',
+    'google.com', 'microsoft.com', 'apple.com', 'facebook.com', 'instagram.com',
+    'twitter.com', 'linkedin.com', 'github.com', 'stackoverflow.com'
+  ]);
+
+  // Known brand variations to reduce false positives
+  private static readonly BRAND_VARIATIONS = new Map([
+    ['amazon', ['amazon prime', 'amazon web services', 'aws']],
+    ['google', ['google drive', 'google docs', 'gmail', 'youtube']],
+    ['microsoft', ['office 365', 'azure', 'bing']],
+    ['apple', ['icloud', 'app store', 'itunes']]
+  ]);
+
   /**
    * Main entry point for domain change detection
    * Returns risk signals only for genuine site purpose changes
@@ -126,16 +143,19 @@ export class FingerprintService {
    * Extract brand name using multiple reliable strategies
    */
   private static async extractBrand(text: string, pageContext: PageContext): Promise<string> {
-    // Strategy 1: Extract from URL domain
+    // Strategy 1: Extract from URL domain (most reliable)
     if (pageContext.url) {
       try {
         const hostname = new URL(pageContext.url).hostname;
         const domainParts = hostname.replace(/^www\./, '').split('.');
         const mainDomain = domainParts[0];
         
-        if (mainDomain.length >= 3 && mainDomain.length <= 30) {
-          console.log('🎯 Brand from domain:', mainDomain);
-          return this.capitalizeBrand(mainDomain);
+        // Enhanced domain processing for better brand extraction
+        const cleanDomain = this.cleanDomainForBrand(mainDomain);
+        
+        if (cleanDomain.length >= 3 && cleanDomain.length <= 30) {
+          console.log('🎯 Brand from domain:', cleanDomain);
+          return this.capitalizeBrand(cleanDomain);
         }
       } catch (e) {
         // Invalid URL, continue to other strategies
@@ -417,7 +437,7 @@ export class FingerprintService {
   }
 
   /**
-   * Multi-layered change analysis
+   * Multi-layered change analysis with enhanced intelligence
    */
   private static analyzeChange(existing: DomainFingerprint, current: DomainFingerprint, pageContext: PageContext) {
     const analysis = {
@@ -425,53 +445,222 @@ export class FingerprintService {
       categoryMatch: existing.category === current.category,
       semanticSimilarity: this.calculateSemanticSimilarity(existing.semanticSummary, current.semanticSummary),
       pageTypeConsistency: this.isPageTypeConsistent(existing.pageTypes, pageContext.pageType),
+      domainChange: existing.domain !== current.domain,
+      visitCountFactor: this.calculateVisitCountFactor(existing.visitCount),
+      timeFactor: this.calculateTimeFactor(existing.lastUpdated),
       overallSimilarity: 0,
-      riskLevel: 'low' as 'low' | 'medium' | 'high'
+      riskLevel: 'low' as 'low' | 'medium' | 'high',
+      confidenceScore: 0
     };
 
-    // Calculate overall similarity using weighted approach
+    // Enhanced similarity calculation with adaptive weights
+    const weights = this.calculateAdaptiveWeights(existing, current, pageContext);
+    
     analysis.overallSimilarity = (
-      analysis.brandSimilarity * 0.4 +           // Brand is most important
-      (analysis.categoryMatch ? 1 : 0) * 0.3 +   // Category consistency
-      analysis.semanticSimilarity * 0.2 +        // Semantic meaning
-      (analysis.pageTypeConsistency ? 1 : 0) * 0.1  // Page type consistency
+      analysis.brandSimilarity * weights.brand +
+      (analysis.categoryMatch ? 1 : 0) * weights.category +
+      analysis.semanticSimilarity * weights.semantic +
+      (analysis.pageTypeConsistency ? 1 : 0) * weights.pageType +
+      (analysis.domainChange ? 0 : 1) * weights.domain +
+      analysis.visitCountFactor * weights.visitCount
     );
 
-    // Determine risk level based on multiple factors
-    if (analysis.brandSimilarity < 0.3 || (!analysis.categoryMatch && analysis.semanticSimilarity < 0.2)) {
-      analysis.riskLevel = 'high';
-    } else if (analysis.overallSimilarity < 0.4) {
-      analysis.riskLevel = 'medium';
-    } else {
-      analysis.riskLevel = 'low';
-    }
+    // Calculate confidence score
+    analysis.confidenceScore = this.calculateAnalysisConfidence(analysis, existing, current);
+
+    // Enhanced risk determination with context awareness
+    analysis.riskLevel = this.determineRiskLevel(analysis, existing, current);
 
     return analysis;
   }
 
   /**
-   * Calculate brand name similarity
+   * Calculate adaptive weights based on context
+   */
+  private static calculateAdaptiveWeights(existing: DomainFingerprint, _current: DomainFingerprint, pageContext: PageContext) {
+    const baseWeights = {
+      brand: 0.4,
+      category: 0.25,
+      semantic: 0.15,
+      pageType: 0.1,
+      domain: 0.05,
+      visitCount: 0.05
+    };
+
+    // Adjust weights based on context
+    if (existing.visitCount < 3) {
+      // New site - be more lenient
+      baseWeights.brand = 0.3;
+      baseWeights.category = 0.2;
+      baseWeights.pageType = 0.2;
+    } else if (existing.visitCount > 10) {
+      // Established site - be more strict
+      baseWeights.brand = 0.5;
+      baseWeights.category = 0.3;
+    }
+
+    // Adjust for page type
+    if (pageContext.pageType === 'checkout') {
+      baseWeights.brand = 0.6; // Brand is critical for checkout
+      baseWeights.domain = 0.1; // Domain change is suspicious
+    }
+
+    return baseWeights;
+  }
+
+  /**
+   * Calculate visit count factor (more visits = more established)
+   */
+  private static calculateVisitCountFactor(visitCount: number): number {
+    if (visitCount <= 1) return 0.5; // New site
+    if (visitCount <= 3) return 0.7; // Recently visited
+    if (visitCount <= 10) return 0.9; // Regular site
+    return 1.0; // Established site
+  }
+
+  /**
+   * Calculate time factor (recent visits are more relevant)
+   */
+  private static calculateTimeFactor(lastUpdated: number): number {
+    const hoursSinceUpdate = (Date.now() - lastUpdated) / (1000 * 60 * 60);
+    
+    if (hoursSinceUpdate < 1) return 1.0; // Very recent
+    if (hoursSinceUpdate < 24) return 0.9; // Same day
+    if (hoursSinceUpdate < 168) return 0.8; // Same week
+    if (hoursSinceUpdate < 720) return 0.7; // Same month
+    return 0.6; // Older
+  }
+
+  /**
+   * Calculate confidence in the analysis
+   */
+  private static calculateAnalysisConfidence(analysis: any, existing: DomainFingerprint, current: DomainFingerprint): number {
+    let confidence = 0;
+    
+    // High confidence if we have established patterns
+    if (existing.visitCount > 5) confidence += 0.3;
+    if (existing.confidence > 0.8) confidence += 0.2;
+    
+    // High confidence if current fingerprint is clear
+    if (current.confidence > 0.8) confidence += 0.2;
+    
+    // High confidence if analysis is consistent
+    if (analysis.brandSimilarity > 0.8 || analysis.brandSimilarity < 0.2) confidence += 0.2;
+    if (analysis.semanticSimilarity > 0.7 || analysis.semanticSimilarity < 0.3) confidence += 0.1;
+    
+    return Math.min(confidence, 1.0);
+  }
+
+  /**
+   * Enhanced risk level determination
+   */
+  private static determineRiskLevel(analysis: any, _existing: DomainFingerprint, _current: DomainFingerprint): 'low' | 'medium' | 'high' {
+    // High risk scenarios
+    if (analysis.domainChange && analysis.brandSimilarity < 0.5) {
+      return 'high'; // Different domain with different brand
+    }
+    
+    if (analysis.brandSimilarity < 0.2) {
+      return 'high'; // Completely different brand
+    }
+    
+    if (analysis.domainChange && !analysis.categoryMatch) {
+      return 'high'; // Domain change + category change
+    }
+    
+    // Medium risk scenarios
+    if (analysis.overallSimilarity < 0.3) {
+      return 'medium'; // Low overall similarity
+    }
+    
+    if (analysis.brandSimilarity < 0.4 && !analysis.categoryMatch) {
+      return 'medium'; // Brand change + category change
+    }
+    
+    if (analysis.domainChange && analysis.overallSimilarity < 0.5) {
+      return 'medium'; // Domain change with moderate similarity
+    }
+    
+    // Low risk scenarios
+    if (analysis.overallSimilarity > 0.6) {
+      return 'low'; // High similarity
+    }
+    
+    if (analysis.brandSimilarity > 0.7 && analysis.pageTypeConsistency) {
+      return 'low'; // Same brand, consistent navigation
+    }
+    
+    return 'low'; // Default to low risk
+  }
+
+  /**
+   * Calculate brand name similarity with enhanced intelligence
    */
   private static calculateBrandSimilarity(brand1: string, brand2: string): number {
     if (brand1 === brand2) return 1.0;
     
-    const normalized1 = brand1.toLowerCase().replace(/[^a-z0-9]/g, '');
-    const normalized2 = brand2.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const normalized1 = brand1.toLowerCase().replace(/[^a-z0-9\s]/g, '');
+    const normalized2 = brand2.toLowerCase().replace(/[^a-z0-9\s]/g, '');
     
     if (normalized1 === normalized2) return 0.95;
+    
+    // Check for known brand variations
+    const variationSimilarity = this.checkBrandVariations(normalized1, normalized2);
+    if (variationSimilarity > 0) return variationSimilarity;
     
     // Check for partial matches (e.g., "Lux Cozi" vs "LuxCozi")
     if (normalized1.includes(normalized2) || normalized2.includes(normalized1)) {
       return 0.8;
     }
     
-    // Check for word overlap
-    const words1 = new Set(normalized1.split(/\s+/));
-    const words2 = new Set(normalized2.split(/\s+/));
+    // Check for word overlap with enhanced scoring
+    const words1 = new Set(normalized1.split(/\s+/).filter(w => w.length > 1));
+    const words2 = new Set(normalized2.split(/\s+/).filter(w => w.length > 1));
+    
+    if (words1.size === 0 || words2.size === 0) return 0;
+    
     const intersection = new Set([...words1].filter(x => words2.has(x)));
     const union = new Set([...words1, ...words2]);
     
-    return union.size === 0 ? 0 : intersection.size / union.size;
+    const baseSimilarity = intersection.size / union.size;
+    
+    // Boost similarity if there's a significant word overlap
+    if (intersection.size > 0) {
+      const overlapRatio = intersection.size / Math.min(words1.size, words2.size);
+      if (overlapRatio > 0.5) {
+        return Math.min(baseSimilarity + 0.2, 0.9);
+      }
+    }
+    
+    return baseSimilarity;
+  }
+
+  /**
+   * Check for known brand variations
+   */
+  private static checkBrandVariations(brand1: string, brand2: string): number {
+    for (const [baseBrand, variations] of this.BRAND_VARIATIONS) {
+      const isBrand1Base = brand1.includes(baseBrand);
+      const isBrand2Base = brand2.includes(baseBrand);
+      
+      if (isBrand1Base && isBrand2Base) {
+        return 0.95; // Both are variations of the same base brand
+      }
+      
+      if (isBrand1Base) {
+        for (const variation of variations) {
+          if (brand2.includes(variation)) return 0.9;
+        }
+      }
+      
+      if (isBrand2Base) {
+        for (const variation of variations) {
+          if (brand1.includes(variation)) return 0.9;
+        }
+      }
+    }
+    
+    return 0;
   }
 
   /**
@@ -515,7 +704,7 @@ export class FingerprintService {
   }
 
   /**
-   * Generate risk signals only for genuine concerns
+   * Generate risk signals only for genuine concerns with enhanced context
    */
   private static generateRiskSignals(analysis: any, existing: DomainFingerprint, current: DomainFingerprint): RiskSignal[] {
     if (analysis.riskLevel === 'low') {
@@ -523,30 +712,76 @@ export class FingerprintService {
     }
 
     const signals: RiskSignal[] = [];
+    const isTrustedDomain = this.TRUSTED_DOMAINS.has(existing.domain);
+    const confidenceBonus = analysis.confidenceScore > 0.8 ? 10 : 0;
     
     // High-risk scenarios
     if (analysis.riskLevel === 'high') {
+      let reason = 'Site appears to have changed significantly';
+      let details = '';
+      
+      if (analysis.domainChange && analysis.brandSimilarity < 0.3) {
+        reason = 'You appear to have navigated to a completely different website';
+        details = `From: ${existing.brand} (${existing.domain}) → To: ${current.brand} (${current.domain})`;
+      } else if (analysis.brandSimilarity < 0.2) {
+        reason = 'Site brand appears to have changed completely';
+        details = `Brand changed from "${existing.brand}" to "${current.brand}"`;
+      } else if (analysis.domainChange && !analysis.categoryMatch) {
+        reason = 'Domain and business type have both changed';
+        details = `Domain: ${existing.domain} → ${current.domain}, Category: ${existing.category} → ${current.category}`;
+      } else {
+        reason = 'Site purpose appears to have changed significantly - possible phishing or takeover';
+        details = `Similarity: ${(analysis.overallSimilarity * 100).toFixed(0)}%, Confidence: ${(analysis.confidenceScore * 100).toFixed(0)}%`;
+      }
+      
       signals.push({
         id: 'site-purpose-change',
-        score: Math.round((1 - analysis.overallSimilarity) * 100),
-        reason: 'Site appears to have changed significantly - possible phishing or takeover.',
+        score: Math.round((1 - analysis.overallSimilarity) * 100) + confidenceBonus,
+        reason,
         severity: 'high',
         category: 'legitimacy',
         source: 'heuristic',
-        details: `Brand similarity: ${(analysis.brandSimilarity * 100).toFixed(0)}%, Category match: ${analysis.categoryMatch}, Overall: ${(analysis.overallSimilarity * 100).toFixed(0)}%`
+        details
       });
     }
     
     // Medium-risk scenarios
     else if (analysis.riskLevel === 'medium') {
+      let reason = 'Site content has changed noticeably since last visit';
+      let details = '';
+      
+      if (analysis.brandSimilarity < 0.4 && !analysis.categoryMatch) {
+        reason = 'Both brand and business type have changed';
+        details = `Brand: ${existing.brand} → ${current.brand}, Category: ${existing.category} → ${current.category}`;
+      } else if (analysis.domainChange && analysis.overallSimilarity < 0.5) {
+        reason = 'You appear to have moved to a different domain with similar content';
+        details = `Domain: ${existing.domain} → ${current.domain}, Similarity: ${(analysis.overallSimilarity * 100).toFixed(0)}%`;
+      } else {
+        reason = 'Site content has changed noticeably since last visit';
+        details = `Overall similarity: ${(analysis.overallSimilarity * 100).toFixed(0)}%, Visit count: ${existing.visitCount}`;
+      }
+      
       signals.push({
         id: 'site-content-change',
-        score: Math.round((1 - analysis.overallSimilarity) * 80),
-        reason: 'Site content has changed noticeably since last visit.',
+        score: Math.round((1 - analysis.overallSimilarity) * 80) + confidenceBonus,
+        reason,
         severity: 'medium',
         category: 'legitimacy',
         source: 'heuristic',
-        details: `Brand: ${existing.brand} → ${current.brand}, Category: ${existing.category} → ${current.category}`
+        details
+      });
+    }
+
+    // Add context-aware warnings for trusted domains
+    if (isTrustedDomain && analysis.riskLevel !== 'low') {
+      signals.push({
+        id: 'trusted-domain-change',
+        score: 20,
+        reason: 'This is a trusted domain - unexpected changes may indicate security issues',
+        severity: 'medium',
+        category: 'security',
+        source: 'heuristic',
+        details: `Trusted domain "${existing.domain}" showing unexpected changes. Verify you're on the correct site.`
       });
     }
 
@@ -679,6 +914,31 @@ export class FingerprintService {
       .split(' ')
       .map(word => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
       .join(' ');
+  }
+
+  /**
+   * Clean domain name for better brand extraction
+   */
+  private static cleanDomainForBrand(domain: string): string {
+    // Remove common suffixes that don't represent the brand
+    const suffixesToRemove = [
+      'store', 'shop', 'online', 'website', 'official', 'global', 'world', 'international',
+      'usa', 'us', 'uk', 'india', 'canada', 'australia', 'europe', 'asia'
+    ];
+    
+    let cleanDomain = domain.toLowerCase();
+    
+    // Remove suffixes
+    for (const suffix of suffixesToRemove) {
+      if (cleanDomain.endsWith(`-${suffix}`) || cleanDomain.endsWith(`_${suffix}`)) {
+        cleanDomain = cleanDomain.slice(0, -(suffix.length + 1));
+      }
+    }
+    
+    // Handle hyphenated domains (e.g., "lux-cozi" -> "Lux Cozi")
+    cleanDomain = cleanDomain.replace(/[-_]/g, ' ');
+    
+    return cleanDomain.trim();
   }
 
   // Legacy methods for backward compatibility
