@@ -338,11 +338,11 @@ async function handleAnalyzePage(payload: any) {
     if (shouldRunAI) {
       console.log(`🤖 Running AI-powered analysis for ${pageType} page...`);
       const aiStartTime = performance.now();
-      
+
       try {
         // Initialize session first (will reuse if already exists)
         const initialized = await AIService.initializeSession();
-        
+
         if (!initialized) {
           console.warn('⚠️ AI session failed to initialize, skipping AI analysis');
           aiAnalysisTime = performance.now() - aiStartTime;
@@ -366,15 +366,15 @@ async function handleAnalyzePage(payload: any) {
               .filter(text => text.length > 0)
               .slice(0, 5),
           };
-          
+
           const pageText = document.body.innerText || '';
-          
+
           // Context-aware AI analysis based on page type
-          const analyses: Promise<any[]>[] = [];
-        
+          const analyses: { name: string, promise: Promise<any[]> }[] = [];
+
           // Analyze dark patterns with page context
-          analyses.push(AIService.analyzeDarkPatterns(pageContent));
-          
+          analyses.push({ name: 'darkPatterns', promise: AIService.analyzeDarkPatterns(pageContent) });
+
           // Legitimacy check only on pages where it matters - with full context
           if (pageType === 'product' || pageType === 'checkout' || pageType === 'home') {
             // Extract social media data from profiles
@@ -386,25 +386,26 @@ async function handleAnalyzePage(payload: any) {
               youtube: contact.socialMediaProfiles.find(p => p.platform === 'youtube')?.url || null,
               count: contact.socialMediaProfiles.length,
             };
-            
-            analyses.push(AIService.analyzeLegitimacy({
-              url: window.location.href,
-              title: document.title,
-              content: pageText.slice(0, 1500),
-              hasHTTPS: security.isHttps,
-              hasContactInfo: contact.hasContactPage || contact.hasEmail || contact.hasPhoneNumber,
-              hasPolicies: policies.hasReturnPolicy || policies.hasPrivacyPolicy,
-              
-              // Enhanced context: Social media intelligence
-              socialMedia: socialMediaData,
-              
-              // Enhanced context: Domain intelligence from WHOIS
-              domainAge: domain.ageInDays,
-              domainAgeYears: domain.ageInDays ? Math.floor(domain.ageInDays / 365) : null,
-              domainStatus: domain.status,
-              domainRegistrar: domain.registrar,
-            }));
-            
+
+            analyses.push({
+              name: 'legitimacy',
+              promise: AIService.analyzeLegitimacy({
+                url: window.location.href,
+                title: document.title,
+                content: pageText.slice(0, 1500),
+                hasHTTPS: security.isHttps,
+                hasContactInfo: contact.hasContactPage || contact.hasEmail || contact.hasPhoneNumber,
+                hasPolicies: policies.hasReturnPolicy || policies.hasPrivacyPolicy,
+                // Enhanced context: Social media intelligence
+                socialMedia: socialMediaData,
+                // Enhanced context: Domain intelligence from WHOIS
+                domainAge: domain.ageInDays,
+                domainAgeYears: domain.ageInDays ? Math.floor(domain.ageInDays / 365) : null,
+                domainStatus: domain.status,
+                domainRegistrar: domain.registrar,
+              })
+            });
+
             console.log('🧠 AI Context:', {
               domainAge: domain.ageInDays ? `${domain.ageInDays} days` : 'Unknown',
               registrar: domain.registrar || 'Unknown',
@@ -413,13 +414,22 @@ async function handleAnalyzePage(payload: any) {
               hasContact: contact.hasContactPage || contact.hasEmail || contact.hasPhoneNumber,
             });
           }
-          
-          // Run selected analyses in parallel
-          const results = await Promise.all(analyses);
+
+          // Run selected analyses in parallel and log timing for each
+          const analysisStartTimes = analyses.map(() => performance.now());
+          const results = await Promise.all(
+            analyses.map(({ promise }, i) =>
+              promise.then(res => {
+                const elapsed = performance.now() - analysisStartTimes[i];
+                console.log(`⏱️ ${analyses[i].name} analysis finished in ${elapsed.toFixed(0)}ms`);
+                return res;
+              })
+            )
+          );
           aiSignals = results.flat();
-          
+
           aiAnalysisTime = performance.now() - aiStartTime;
-          console.log(`✅ AI found ${aiSignals.length} signals in ${aiAnalysisTime.toFixed(0)}ms`);
+          console.log(`✅ AI found ${aiSignals.length} signals in ${aiAnalysisTime.toFixed(0)}ms (parallel)`);
         }
       } catch (aiError) {
         aiAnalysisTime = performance.now() - aiStartTime;
