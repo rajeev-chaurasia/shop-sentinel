@@ -490,6 +490,20 @@ async function handleAnalyzePage(payload: any) {
       heuristicTime: `${(totalTime - aiAnalysisTime).toFixed(0)}ms`,
     });
     
+    // Update extension icon based on risk level (TG-08)
+    try {
+      const badgeText = totalRiskScore > 0 ? String(totalRiskScore) : '';
+      chrome.runtime.sendMessage({
+        action: 'UPDATE_ICON',
+        payload: { riskLevel, badgeText },
+      }).catch(error => {
+        console.warn('⚠️ Could not update icon:', error);
+      });
+      console.log('✅ Icon update requested');
+    } catch (error) {
+      console.warn('⚠️ Could not update icon:', error);
+    }
+    
     // Cache the result immediately (before returning to popup)
     // This ensures cache persists even if popup closes during analysis
     try {

@@ -127,11 +127,6 @@ export function PolicySummary({
                         <div className="font-black text-green-900 text-base">
                           {policy.label}
                         </div>
-                        {url && (
-                          <div className="text-xs text-green-700 truncate mt-0.5 font-medium">
-                            {url}
-                          </div>
-                        )}
                       </div>
                     </div>
                     {url && (

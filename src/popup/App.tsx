@@ -11,6 +11,7 @@ function App() {
   const [isFromCache, setIsFromCache] = useState(false);
   const [pollInterval, setPollInterval] = useState<number | null>(null);
   const [annotationsVisible, setAnnotationsVisible] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false); // Prevent race conditions
   
   const {
     currentUrl,
@@ -38,7 +39,15 @@ function App() {
     if (isLoading && !pollInterval) {
       console.log('⏳ Starting poll for analysis completion');
       const interval = setInterval(async () => {
+        // Guard against concurrent updates
+        if (isUpdating) {
+          console.log('⏸️ Update in progress, skipping poll');
+          return;
+        }
+        
         try {
+          setIsUpdating(true);
+          
           const tab = await MessagingService.getActiveTab();
           if (!tab?.url) return;
 
@@ -61,6 +70,8 @@ function App() {
           }
         } catch (error) {
           console.error('Poll error:', error);
+        } finally {
+          setIsUpdating(false);
         }
       }, 2000); // Check every 2 seconds
       
@@ -69,52 +80,76 @@ function App() {
       clearInterval(pollInterval);
       setPollInterval(null);
     }
-  }, [isLoading]);
+  }, [isLoading, isUpdating]);
 
   // Monitor cross-tab storage changes for live updates
   useEffect(() => {
+    let updateTimeout: number | null = null;
+    
     const handleStorageChange = async (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
       if (areaName !== 'local') return;
       
-      try {
-        const tab = await MessagingService.getActiveTab();
-        if (!tab?.url) return;
-        
-        const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
-        if (!pageInfoResponse.success || !pageInfoResponse.data) return;
-        
-        const pageType = pageInfoResponse.data.pageType || 'other';
-        const cacheKey = `analysis_${new URL(tab.url).hostname.replace(/^www\./, '')}:${pageType}`;
-        
-        // Check if analysis completed in another tab
-        if (changes[cacheKey] && changes[cacheKey].newValue) {
-          console.log('📡 Analysis completed in another tab, updating...');
-          const cached = changes[cacheKey].newValue as any;
-          
-          if (cached.result && !cached.expiresAt) {
-            // Old format, just use result
-            setAnalysisResult(cached);
-          } else if (cached.result && Date.now() < cached.expiresAt) {
-            // New format with expiration
-            setAnalysisResult(cached.result);
-          }
-          
-          setIsFromCache(true);
-          if (isLoading) {
-            completeAnalysis();
-          }
-        }
-      } catch (error) {
-        console.error('Error handling storage change:', error);
+      // Debounce rapid storage changes to prevent race conditions
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
       }
+      
+      updateTimeout = setTimeout(async () => {
+        // Guard against concurrent updates
+        if (isUpdating) {
+          console.log('⏸️ Update already in progress, skipping storage change');
+          return;
+        }
+        
+        try {
+          setIsUpdating(true);
+          
+          const tab = await MessagingService.getActiveTab();
+          if (!tab?.url) return;
+          
+          const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+          if (!pageInfoResponse.success || !pageInfoResponse.data) return;
+          
+          const pageType = pageInfoResponse.data.pageType || 'other';
+          const cacheKey = `analysis_${new URL(tab.url).hostname.replace(/^www\./, '')}:${pageType}`;
+          
+          // Check if analysis completed in another tab
+          if (changes[cacheKey] && changes[cacheKey].newValue) {
+            console.log('📡 Analysis completed, updating UI...');
+            const cached = changes[cacheKey].newValue as any;
+            
+            if (cached.result && !cached.expiresAt) {
+              // Old format, just use result
+              setAnalysisResult(cached);
+            } else if (cached.result && Date.now() < cached.expiresAt) {
+              // New format with expiration
+              setAnalysisResult(cached.result);
+            }
+            
+            setIsFromCache(true);
+            if (isLoading) {
+              completeAnalysis();
+            }
+            
+            console.log('✅ UI updated successfully');
+          }
+        } catch (error) {
+          console.error('Error handling storage change:', error);
+        } finally {
+          setIsUpdating(false);
+        }
+      }, 300); // 300ms debounce to batch rapid changes
     };
     
     chrome.storage.onChanged.addListener(handleStorageChange);
     
     return () => {
       chrome.storage.onChanged.removeListener(handleStorageChange);
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
+      }
     };
-  }, [isLoading]);
+  }, [isLoading, isUpdating]);
 
   const initializePopup = async () => {
     await testConnection();
@@ -175,7 +210,15 @@ function App() {
   };
 
   const handleAnalyze = async (force = false) => {
+    // Guard against concurrent analysis requests
+    if (isUpdating) {
+      console.log('⏸️ Update in progress, please wait');
+      return;
+    }
+    
     try {
+      setIsUpdating(true);
+      
       const tab = await MessagingService.getActiveTab();
       if (!tab?.url) {
         setError('No active tab found');
@@ -210,6 +253,8 @@ function App() {
       }
     } catch (error) {
       setError(error instanceof Error ? error.message : 'Analysis failed');
+    } finally {
+      setIsUpdating(false);
     }
   };
 

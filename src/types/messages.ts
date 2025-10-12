@@ -5,7 +5,12 @@ export type MessageAction =
   | 'GET_POLICIES'
   | 'HIGHLIGHT_ELEMENTS'
   | 'CLEAR_HIGHLIGHTS'
-  | 'UPDATE_ICON';
+  | 'UPDATE_ICON'
+  | 'CLEAR_ICON'
+  | 'GET_TAB_STATE'
+  | 'SET_TAB_STATE'
+  | 'CLEAR_TAB_STATE'
+  | 'GET_ALL_TAB_STATES';
 
 export interface BaseMessage {
   action: MessageAction;
