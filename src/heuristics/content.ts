@@ -1,3 +1,19 @@
+// Example of a heuristic that finds countdown timers and returns both signal and element
+export function findUrgencyPatterns(document: Document): { signal: RiskSignal; element: HTMLElement }[] {
+  const timers = document.querySelectorAll('.countdown-timer, [data-urgency], .timer, .offer-timer');
+  return Array.from(timers).map(timerElement => ({
+    signal: {
+      id: 'false-urgency-timer',
+      score: 30,
+      reason: 'A countdown timer was found, which may create false urgency.',
+      severity: 'medium',
+      category: 'dark-pattern',
+      source: 'heuristic',
+      details: timerElement.outerHTML
+    },
+    element: timerElement as HTMLElement,
+  }));
+}
 import { 
   RiskSignal, 
   ContactAnalysis, 

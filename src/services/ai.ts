@@ -1,3 +1,47 @@
+/**
+ * AI-powered dark pattern explainer
+ * Uses Chrome's local AI model to generate a friendly explanation
+ */
+export async function getDarkPatternExplanation(contextSnippet: string): Promise<string> {
+    try {
+        // Check for window.ai or LanguageModel API
+        const aiAvailable = typeof window !== 'undefined' &&
+            (window as any).ai && typeof (window as any).ai.createTextSession === 'function';
+        const lmAvailable = typeof LanguageModel !== 'undefined';
+
+        if (!aiAvailable && !lmAvailable) {
+            return 'This may be a deceptive design.';
+        }
+
+        // Construct prompt
+        const prompt = `You are a helpful shopping assistant who protects users from deceptive designs. Analyze the following snippet from an e-commerce site and explain in one friendly, concise sentence how it might be trying to pressure the user. Snippet: ${contextSnippet}`;
+
+        // Use LanguageModel if available
+        if (lmAvailable) {
+            const session = await LanguageModel.create({
+                temperature: 0.7,
+                topK: 3,
+                initialPrompts: [{ role: 'system', content: 'You are a helpful shopping assistant who explains dark patterns.' }],
+            });
+            const response = await session.prompt(prompt);
+            session.destroy();
+            return response.trim();
+        }
+
+        // Fallback: Use window.ai
+        if (aiAvailable) {
+            const session = await (window as any).ai.createTextSession();
+            const response = await session.prompt(prompt);
+            session.destroy();
+            return response.trim();
+        }
+
+        return 'This may be a deceptive design.';
+    } catch (err) {
+        console.warn('AI explainer error:', err);
+        return 'This may be a deceptive design.';
+    }
+}
 import { RiskSignal } from '../types';
 
 // Chrome Built-in AI Prompt API types (NEW API)

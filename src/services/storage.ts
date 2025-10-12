@@ -30,6 +30,10 @@ export const StorageService = {
    */
   async get<T>(key: string): Promise<T | null> {
     try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+        console.error('chrome.storage.local is not available');
+        return null;
+      }
       const result = await chrome.storage.local.get(key);
       return result[key] ?? null;
     } catch (error) {
@@ -43,6 +47,10 @@ export const StorageService = {
    */
   async set<T>(key: string, value: T): Promise<boolean> {
     try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+        console.error('chrome.storage.local is not available');
+        return false;
+      }
       await chrome.storage.local.set({ [key]: value });
       return true;
     } catch (error) {
@@ -56,6 +64,10 @@ export const StorageService = {
    */
   async remove(key: string): Promise<boolean> {
     try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+        console.error('chrome.storage.local is not available');
+        return false;
+      }
       await chrome.storage.local.remove(key);
       return true;
     } catch (error) {
@@ -69,6 +81,10 @@ export const StorageService = {
    */
   async clear(): Promise<boolean> {
     try {
+      if (typeof chrome === 'undefined' || !chrome.storage || !chrome.storage.local) {
+        console.error('chrome.storage.local is not available');
+        return false;
+      }
       await chrome.storage.local.clear();
       return true;
     } catch (error) {

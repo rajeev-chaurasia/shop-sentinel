@@ -320,6 +320,9 @@ async function handleAnalyzePage(payload: any) {
       runDomainSecurityChecks(),
       runContentPolicyChecks()
     ]);
+
+
+    // Step 2: For each detected pattern, get AI explanation and add to RiskSignal
     
     const aiAvailable = await AIService.checkAvailability();
     console.log(`🤖 AI Available: ${aiAvailable}`);
