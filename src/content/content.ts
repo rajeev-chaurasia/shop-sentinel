@@ -3,6 +3,7 @@ import { runDomainSecurityChecks } from '../heuristics/domain';
 import { runContentPolicyChecks } from '../heuristics/content';
 import { AIService } from '../services/ai';
 import { RiskCalculator } from '../services/riskCalculator';
+import { FingerprintService } from '../services';
 import { displayAnnotations, clearAnnotations, MOCK_ANNOTATIONS } from './annotator';
 
 console.log('🛡️ Shop Sentinel content script loaded on:', window.location.href);
@@ -439,7 +440,17 @@ async function handleAnalyzePage(payload: any) {
       console.log(`⏭️ Skipping AI analysis: ${reason}`);
     }
     
-    // Collect all signals (heuristics + AI)
+    // Fingerprint-based change detection (domain purpose drift)
+    let fingerprintSignals: any[] = [];
+    try {
+      const domainName = window.location.hostname.replace(/^www\./, '');
+      const pageTextForFp = (document.body?.innerText || '').slice(0, 20000);
+      fingerprintSignals = await FingerprintService.checkDomainChange(domainName, pageTextForFp, window.location.href);
+    } catch (fpError) {
+      console.warn('⚠️ Fingerprint check error:', fpError);
+    }
+
+    // Collect all signals (heuristics + AI + fingerprint)
     const allSignals = [
       ...security.signals,
       ...domain.signals,
@@ -447,6 +458,7 @@ async function handleAnalyzePage(payload: any) {
       ...contact.signals,
       ...policies.signals,
       ...aiSignals,
+      ...fingerprintSignals,
     ];
     
     // Use smart risk calculator with deduplication and proper normalization
