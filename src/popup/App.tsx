@@ -24,6 +24,17 @@ function App() {
     setError,
   } = useAnalysisStore();
 
+  // Validate that an object is a full AnalysisResult (not an in-progress/status payload)
+  const isValidAnalysisResult = (data: any): data is AnalysisResult => {
+    return (
+      data && typeof data === 'object' &&
+      typeof data.totalRiskScore === 'number' &&
+      typeof data.riskLevel === 'string' &&
+      data.security && typeof data.security === 'object' &&
+      Array.isArray(data.allSignals)
+    );
+  };
+
   useEffect(() => {
     initializePopup();
     
@@ -34,53 +45,48 @@ function App() {
     };
   }, []);
 
-  // Poll for results when in loading state
+  // Poll for results when in loading state (non-blocking, no isUpdating guard)
   useEffect(() => {
     if (isLoading && !pollInterval) {
       console.log('⏳ Starting poll for analysis completion');
       const interval = setInterval(async () => {
-        // Guard against concurrent updates
-        if (isUpdating) {
-          console.log('⏸️ Update in progress, skipping poll');
-          return;
-        }
-        
         try {
-          setIsUpdating(true);
-          
           const tab = await MessagingService.getActiveTab();
           if (!tab?.url) return;
 
-          // Get current page type
           const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
           if (!pageInfoResponse.success || !pageInfoResponse.data) return;
 
           const pageType = pageInfoResponse.data.pageType || 'other';
-          
-          // Check cache for this specific page type only
           const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
-          if (cached) {
+          if (cached && isValidAnalysisResult(cached)) {
             console.log(`✅ Analysis completed! Loading result (${pageType})...`);
             setAnalysisResult(cached);
             completeAnalysis();
             setIsFromCache(true);
             clearInterval(interval);
             setPollInterval(null);
-            return;
           }
         } catch (error) {
           console.error('Poll error:', error);
-        } finally {
-          setIsUpdating(false);
         }
-      }, 2000); // Check every 2 seconds
-      
+      }, 1500);
+
       setPollInterval(interval);
     } else if (!isLoading && pollInterval) {
       clearInterval(pollInterval);
       setPollInterval(null);
     }
-  }, [isLoading, isUpdating]);
+  }, [isLoading, pollInterval]);
+
+  // Safety net: in case storage event is missed, re-check cache once after 8s of loading
+  useEffect(() => {
+    if (!isLoading) return;
+    const t = setTimeout(() => {
+      loadCachedAnalysis();
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [isLoading]);
 
   // Monitor cross-tab storage changes for live updates
   useEffect(() => {
@@ -119,11 +125,15 @@ function App() {
             const cached = changes[cacheKey].newValue as any;
             
             if (cached.result && !cached.expiresAt) {
-              // Old format, just use result
-              setAnalysisResult(cached);
+              if (isValidAnalysisResult(cached)) {
+                setAnalysisResult(cached);
+                if (isLoading) completeAnalysis();
+              }
             } else if (cached.result && Date.now() < cached.expiresAt) {
-              // New format with expiration
-              setAnalysisResult(cached.result);
+              if (isValidAnalysisResult(cached.result)) {
+                setAnalysisResult(cached.result);
+                if (isLoading) completeAnalysis();
+              }
             }
             
             setIsFromCache(true);
@@ -197,7 +207,7 @@ function App() {
       console.log(`🔍 Checking cache for: ${tab.url} (${pageType})`);
       const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
       
-      if (cached) {
+      if (cached && isValidAnalysisResult(cached)) {
         console.log(`✅ Cache hit for ${pageType}:`, cached);
         setAnalysisResult(cached);
         setIsFromCache(true);
@@ -240,13 +250,19 @@ function App() {
 
       if (response.success && response.data) {
         console.log('✅ Analysis complete, caching result for:', tab.url);
-        setAnalysisResult(response.data);
-        completeAnalysis();
+        if (isValidAnalysisResult(response.data)) {
+          setAnalysisResult(response.data);
+          completeAnalysis();
+        } else {
+          console.log('ℹ️ Non-final response received; waiting for cache/storage update');
+        }
         
         // Cache the result with pageType from the analysis
         const pageType = response.data.pageType || 'other';
-        const cached = await StorageService.cacheAnalysis(tab.url, pageType, response.data);
-        console.log('💾 Cache saved:', cached);
+        if (isValidAnalysisResult(response.data)) {
+          const cached = await StorageService.cacheAnalysis(tab.url, pageType, response.data);
+          console.log('💾 Cache saved:', cached);
+        }
         setIsFromCache(false);
       } else {
         setError(response.error || 'Analysis failed');
@@ -424,9 +440,9 @@ function App() {
                   </button>
                   <button onClick={() => setActiveTab('reasons')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 relative ${activeTab === 'reasons' ? 'bg-white text-blue-600 shadow-md transform scale-105' : 'text-gray-600 hover:text-gray-900 hover:bg-white hover:bg-opacity-50'}`}>
                     Issues
-                    {analysisResult.allSignals.length > 0 && (
+                    {(analysisResult.allSignals?.length ?? 0) > 0 && (
                       <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold ${activeTab === 'reasons' ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-700'}`}>
-                        {analysisResult.allSignals.length}
+                        {analysisResult.allSignals?.length ?? 0}
                       </span>
                     )}
                   </button>
@@ -456,27 +472,27 @@ function App() {
                       <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-4 border border-blue-200 shadow-sm">
                         <div className="text-xs font-semibold text-blue-600 mb-1.5 uppercase tracking-wide">Security</div>
                         <div className="flex items-center gap-2">
-                          <span className="text-2xl">{analysisResult.security.isHttps ? '🔒' : '⚠️'}</span>
-                          <span className="font-bold text-gray-800">{analysisResult.security.isHttps ? 'HTTPS' : 'Not Secure'}</span>
+                          <span className="text-2xl">{(analysisResult.security?.isHttps ?? false) ? '🔒' : '⚠️'}</span>
+                          <span className="font-bold text-gray-800">{(analysisResult.security?.isHttps ?? false) ? 'HTTPS' : 'Not Secure'}</span>
                         </div>
                       </div>
                       <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl p-4 border border-purple-200 shadow-sm">
                         <div className="text-xs font-semibold text-purple-600 mb-1.5 uppercase tracking-wide">Issues Found</div>
                         <div className="flex items-center gap-2">
-                          <span className="text-2xl">{analysisResult.allSignals.length === 0 ? '✅' : '🚨'}</span>
-                          <span className="font-bold text-gray-800">{analysisResult.allSignals.length} detected</span>
+                          <span className="text-2xl">{(analysisResult.allSignals?.length ?? 0) === 0 ? '✅' : '🚨'}</span>
+                          <span className="font-bold text-gray-800">{analysisResult.allSignals?.length ?? 0} detected</span>
                         </div>
                       </div>
                     </div>
-                    {analysisResult.allSignals.length > 0 && (
+                    {(analysisResult.allSignals?.length ?? 0) > 0 && (
                       <div>
                         <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
                           <span className="text-lg">⚠️</span>Top Issues
                         </h3>
-                        <ReasonsList signals={analysisResult.allSignals} maxItems={2} showCategory={true} compact={true} />
-                        {analysisResult.allSignals.length > 2 && (
+                        <ReasonsList signals={analysisResult.allSignals ?? []} maxItems={2} showCategory={true} compact={true} />
+                        {(analysisResult.allSignals?.length ?? 0) > 2 && (
                           <button onClick={() => setActiveTab('reasons')} className="w-full mt-3 py-2 px-4 bg-gradient-to-r from-orange-100 to-red-100 hover:from-orange-200 hover:to-red-200 border-2 border-orange-300 text-orange-900 font-semibold text-sm rounded-xl transition-all duration-200 shadow-sm hover:shadow">
-                            View All {analysisResult.allSignals.length} Issues →
+                            View All {analysisResult.allSignals?.length ?? 0} Issues →
                           </button>
                         )}
                       </div>
@@ -485,11 +501,22 @@ function App() {
                       <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
                         <span className="text-lg">📄</span>Policies
                       </h3>
-                      <PolicySummary policies={analysisResult.policies} compact={true} />
+                      <PolicySummary 
+                        policies={analysisResult.policies ?? {
+                          hasReturnPolicy: false,
+                          hasShippingPolicy: false,
+                          hasRefundPolicy: false,
+                          hasTermsOfService: false,
+                          hasPrivacyPolicy: false,
+                          policyUrls: {},
+                          signals: [],
+                        }} 
+                        compact={true} 
+                      />
                     </div>
                     
                     {/* TG-09: On-Page Annotations Toggle */}
-                    {analysisResult.allSignals.length > 0 && (
+                    {(analysisResult.allSignals?.length ?? 0) > 0 && (
                       <div className="bg-gradient-to-br from-orange-50 to-yellow-50 rounded-xl p-4 border-2 border-orange-300">
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
@@ -525,7 +552,7 @@ function App() {
                 )}
                 {activeTab === 'reasons' && (
                   <div className="pt-2 animate-fadeIn">
-                    <ReasonsList signals={analysisResult.allSignals} showCategory={true} compact={false} />
+                    <ReasonsList signals={analysisResult.allSignals ?? []} showCategory={true} compact={false} />
                   </div>
                 )}
                 {activeTab === 'policies' && (
