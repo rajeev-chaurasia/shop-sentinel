@@ -46,8 +46,34 @@ export function contentScriptPlugin() {
         });
 
         console.log('✅ Content script built');
+        
+        // Build background service worker
+        console.log('\n🔨 Building background service worker...');
+        
+        await build({
+          configFile: false,
+          build: {
+            outDir: 'dist',
+            emptyOutDir: false,
+            lib: {
+              entry: resolve(__dirname, 'src/background/background.ts'),
+              name: 'BackgroundWorker',
+              formats: ['iife'],
+              fileName: () => 'background.js',
+            },
+            rollupOptions: {
+              output: {
+                extend: true,
+                inlineDynamicImports: true,
+              },
+            },
+            minify: true,
+          },
+        });
+
+        console.log('✅ Background service worker built');
       } catch (error) {
-        console.error('❌ Content script build failed:', error);
+        console.error('❌ Build failed:', error);
         throw error;
       }
     },
