@@ -28,7 +28,7 @@ interface AnalysisState {
 
 interface AnalysisActions {
   startAnalysis: (url: string) => void;
-  setAnalysisResult: (result: AnalysisResult) => void;
+  setAnalysisResult: (result: AnalysisResult | null) => void;
   updateAnalysisProgress: (progress: number) => void;
   completeAnalysis: () => void;
   startPolicySummary: () => void;
@@ -90,15 +90,16 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
       isLoading: true,
       error: null,
       analysisProgress: 0,
-      analysisResult: null, // Clear result to show loading state
+      // Don't clear analysisResult - keep showing previous results during loading
+      // This prevents UI "reset" when reopening popup during analysis
     });
   },
   
-  setAnalysisResult: (result: AnalysisResult) => {
+  setAnalysisResult: (result: AnalysisResult | null) => {
     set({
       analysisResult: result,
-      lastAnalyzedAt: Date.now(),
-      analysisProgress: 100,
+      lastAnalyzedAt: result ? Date.now() : null,
+      analysisProgress: result ? 100 : 0,
     });
   },
   

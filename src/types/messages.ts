@@ -5,7 +5,10 @@ export type MessageAction =
   | 'GET_POLICIES'
   | 'HIGHLIGHT_ELEMENTS'
   | 'CLEAR_HIGHLIGHTS'
-  | 'UPDATE_ICON';
+  | 'UPDATE_ICON'
+  | 'VALIDATE_SOCIAL_URLS'
+  | 'GET_VALIDATION_STATS'
+  | 'CLEAR_VALIDATION_CACHE';
 
 export interface BaseMessage {
   action: MessageAction;
@@ -46,6 +49,14 @@ export interface HighlightElementsPayload {
 export interface UpdateIconPayload {
   riskLevel: 'safe' | 'low' | 'medium' | 'high' | 'critical';
   badgeText?: string;
+}
+
+export interface ValidateSocialUrlsPayload {
+  urls: Array<{
+    platform: string;
+    url: string;
+    location: 'footer' | 'header' | 'body' | 'unknown';
+  }>;
 }
 
 export function createMessage<T = any>(

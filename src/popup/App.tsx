@@ -21,6 +21,7 @@ function App() {
     setAnalysisResult,
     completeAnalysis,
     setError,
+    clearError,
   } = useAnalysisStore();
 
   useEffect(() => {
@@ -31,45 +32,80 @@ function App() {
         clearInterval(pollInterval);
       }
     };
-  }, []);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Poll for results when in loading state
   useEffect(() => {
+    let interval: number | null = null;
+    
     if (isLoading && !pollInterval) {
       console.log('⏳ Starting poll for analysis completion');
-      const interval = setInterval(async () => {
+      interval = setInterval(async () => {
         try {
           const tab = await MessagingService.getActiveTab();
-          if (!tab?.url) return;
-
-          // Get current page type
-          const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
-          if (!pageInfoResponse.success || !pageInfoResponse.data) return;
-
-          const pageType = pageInfoResponse.data.pageType || 'other';
-          
-          // Check cache for this specific page type only
-          const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
-          if (cached) {
-            console.log(`✅ Analysis completed! Loading result (${pageType})...`);
-            setAnalysisResult(cached);
-            completeAnalysis();
-            setIsFromCache(true);
-            clearInterval(interval);
-            setPollInterval(null);
+          if (!tab?.url) {
+            console.log('⚠️ No active tab during polling');
             return;
           }
+
+          // Get current page type and check if analysis is still in progress
+          const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+          if (!pageInfoResponse.success || !pageInfoResponse.data) {
+            console.log('⚠️ Failed to get page info during polling');
+            return;
+          }
+
+          const pageType = pageInfoResponse.data.pageType || 'other';
+          const isStillInProgress = pageInfoResponse.data.isAnalysisInProgress || false;
+          
+          console.log(`🔍 Polling: pageType=${pageType}, isInProgress=${isStillInProgress}`);
+          
+          // If analysis is no longer in progress, check cache
+          if (!isStillInProgress) {
+            console.log(`🔍 Analysis no longer in progress, checking cache for ${pageType}...`);
+            const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
+            if (cached) {
+              console.log(`✅ Analysis completed! Loading result (${pageType}):`, cached);
+              clearError(); // Clear any errors before showing results
+              setAnalysisResult(cached);
+              completeAnalysis();
+              setIsFromCache(true);
+              if (interval) clearInterval(interval);
+              setPollInterval(null);
+              return;
+            } else {
+              console.log(`⚠️ Analysis no longer in progress but no cache found for ${pageType}`);
+              // Analysis might have failed, stop polling
+              completeAnalysis();
+              if (interval) clearInterval(interval);
+              setPollInterval(null);
+              return;
+            }
+          } else {
+            console.log(`⏳ Analysis still in progress for ${pageType}, continuing to poll...`);
+          }
         } catch (error) {
-          console.error('Poll error:', error);
+          console.error('❌ Poll error:', error);
         }
       }, 2000); // Check every 2 seconds
       
       setPollInterval(interval);
     } else if (!isLoading && pollInterval) {
+      console.log('🛑 Stopping poll (no longer loading)');
       clearInterval(pollInterval);
       setPollInterval(null);
     }
-  }, [isLoading]);
+    
+    // Cleanup on unmount
+    return () => {
+      if (interval) {
+        clearInterval(interval);
+      }
+      if (pollInterval) {
+        clearInterval(pollInterval);
+      }
+    };
+  }, [isLoading]); // Removed pollInterval from deps to prevent infinite loop
 
   // Monitor cross-tab storage changes for live updates
   useEffect(() => {
@@ -93,9 +129,11 @@ function App() {
           
           if (cached.result && !cached.expiresAt) {
             // Old format, just use result
+            clearError(); // Clear any stale errors
             setAnalysisResult(cached);
           } else if (cached.result && Date.now() < cached.expiresAt) {
             // New format with expiration
+            clearError(); // Clear any stale errors
             setAnalysisResult(cached.result);
           }
           
@@ -148,14 +186,20 @@ function App() {
 
       const pageType = pageInfoResponse.data.pageType || 'other';
       const confidence = pageInfoResponse.data.pageTypeConfidence || 0;
+      const isInProgressFromContent = pageInfoResponse.data.isAnalysisInProgress || false;
       console.log(`📄 Detected page type: ${pageType} (confidence: ${confidence}%)`);
 
-      // Check if analysis is in progress for THIS specific page type
-      const inProgress = await StorageService.isAnalysisInProgress(tab.url, pageType);
+      // Check if analysis is in progress using both storage and content script
+      const inProgressFromStorage = await StorageService.isAnalysisInProgress(tab.url, pageType);
+      const inProgress = inProgressFromStorage || isInProgressFromContent;
+      
+      console.log(`🔍 Initialization check: storage=${inProgressFromStorage}, content=${isInProgressFromContent}, combined=${inProgress}`);
+      
       if (inProgress) {
         console.log(`⏳ Analysis in progress for ${pageType}, entering loading state`);
+        clearError(); // Clear any stale errors
         startAnalysis(tab.url);
-        return;
+        // Don't return early - continue to check cache in case analysis just completed
       }
 
       // Check cache only for this specific page type
@@ -164,6 +208,7 @@ function App() {
       
       if (cached) {
         console.log(`✅ Cache hit for ${pageType}:`, cached);
+        clearError(); // Clear any errors when loading cached results
         setAnalysisResult(cached);
         setIsFromCache(true);
       } else {
@@ -182,34 +227,77 @@ function App() {
         return;
       }
 
-      // If forcing refresh, clear cache first
+      // Clear any previous errors before starting
+      clearError();
+      
+      // If forcing refresh, clear cache and results
       if (force) {
         await StorageService.clearCachedAnalysis(tab.url);
+        setAnalysisResult(null); // Only clear on force refresh
         setIsFromCache(false);
       }
-
+      
+      // Start analysis (keeps previous results visible during loading)
       startAnalysis(tab.url);
+      
+      console.log('🚀 Triggering analysis, polling will handle results...');
 
-      const response = await MessagingService.sendToActiveTab<any, AnalysisResult>(
+      // Fire and forget with extended timeout for long-running analysis
+      // The polling mechanism will pick up the results when ready
+      MessagingService.sendToActiveTab<any, AnalysisResult>(
         'ANALYZE_PAGE',
-        { url: tab.url, includeAI: useAI }
-      );
-
-      if (response.success && response.data) {
-        console.log('✅ Analysis complete, caching result for:', tab.url);
-        setAnalysisResult(response.data);
-        completeAnalysis();
+        { url: tab.url, includeAI: useAI, forceRefresh: force },
+        { timeout: 60000 } // 60 second timeout for AI analysis
+      ).then((response) => {
+        console.log('📨 Analysis response received:', response);
         
-        // Cache the result with pageType from the analysis
-        const pageType = response.data.pageType || 'other';
-        const cached = await StorageService.cacheAnalysis(tab.url, pageType, response.data);
-        console.log('💾 Cache saved:', cached);
-        setIsFromCache(false);
-      } else {
-        setError(response.error || 'Analysis failed');
-      }
+        if (response.success && response.data) {
+          // Handle different response types
+          if (response.data.status === 'in_progress') {
+            console.log('⏳ Analysis already in progress, polling will handle it');
+            return;
+          }
+          
+          if (response.data.status === 'error') {
+            console.error('❌ Analysis error:', response.data.error);
+            setError(response.data.error || 'Analysis failed');
+            completeAnalysis();
+            return;
+          }
+
+          // Successful analysis result - update state
+          // (polling might also update it, but that's okay - they're the same data)
+          console.log('✅ Analysis complete via direct response');
+          clearError();
+          setAnalysisResult(response.data);
+          completeAnalysis();
+          setIsFromCache(false);
+        } else if (response.error) {
+          console.error('❌ Analysis failed:', response.error);
+          // Only complete analysis if it's a genuine failure, not a timeout
+          // Polling will handle timeout cases
+          if (!response.error.includes('timeout')) {
+            setError(response.error);
+            completeAnalysis();
+          } else {
+            console.warn('⚠️ Message timeout, polling will continue checking');
+          }
+        }
+      }).catch((error) => {
+        console.error('❌ Analysis request failed:', error);
+        // Don't call completeAnalysis() here! The analysis might still be running in the content script.
+        // If it's a timeout, polling will detect completion and update state.
+        // Only log the error - polling will handle state transitions.
+        console.warn('⚠️ Message failed, but polling will continue to check for results');
+      });
+
+      // Don't wait - return immediately and let polling handle the rest
+      console.log('✅ Analysis request sent, UI remains responsive');
+      
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Analysis failed');
+      console.error('❌ Failed to start analysis:', error);
+      setError(error instanceof Error ? error.message : 'Failed to start analysis');
+      completeAnalysis();
     }
   };
 
@@ -336,15 +424,46 @@ function App() {
                   <p className="text-sm text-gray-600 max-w-sm mx-auto">
                     {useAI ? (
                       <>
-                        🤖 Running AI-powered analysis
+                        🤖 Running comprehensive analysis
                         <br />
-                        <span className="text-xs text-gray-500">This may take 15-30 seconds</span>
+                        <span className="text-xs text-gray-500">Heuristics + AI analysis in progress</span>
                       </>
                     ) : (
-                      'Running security and pattern checks...'
+                      <>
+                        🔍 Running heuristic analysis
+                        <br />
+                        <span className="text-xs text-gray-500">Security, domain, and policy checks</span>
+                      </>
                     )}
                   </p>
                 </div>
+                
+                {/* Analysis Progress Steps */}
+                <div className="space-y-3 max-w-sm mx-auto">
+                  <div className="flex items-center gap-3 text-sm">
+                    <span className="w-5 h-5 bg-green-500 rounded-full flex items-center justify-center text-white text-xs">✓</span>
+                    <span className="text-gray-700">Page type detection</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-sm">
+                    <span className="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center text-white text-xs animate-pulse">⚙</span>
+                    <span className="text-gray-700">Security & domain checks</span>
+                  </div>
+                  <div className="flex items-center gap-3 text-sm">
+                    <span className="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center text-white text-xs animate-pulse">⚙</span>
+                    <span className="text-gray-700">Content & policy analysis</span>
+                  </div>
+                  {useAI && (
+                    <div className="flex items-center gap-3 text-sm">
+                      <span className="w-5 h-5 bg-purple-500 rounded-full flex items-center justify-center text-white text-xs animate-pulse">🤖</span>
+                      <span className="text-gray-700">AI-powered pattern detection</span>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-3 text-sm">
+                    <span className="w-5 h-5 bg-gray-300 rounded-full flex items-center justify-center text-white text-xs">⏳</span>
+                    <span className="text-gray-500">Risk scoring & aggregation</span>
+                  </div>
+                </div>
+                
                 <div className="flex items-center justify-center gap-2 text-xs text-gray-500">
                   <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-bounce"></span>
                   <span className="inline-block w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></span>
@@ -422,12 +541,57 @@ function App() {
                           <span className="text-2xl">{analysisResult.security.isHttps ? '🔒' : '⚠️'}</span>
                           <span className="font-bold text-gray-800">{analysisResult.security.isHttps ? 'HTTPS' : 'Not Secure'}</span>
                         </div>
+                        <div className="text-xs text-gray-600 mt-1">
+                          {analysisResult.domain.ageInDays ? 
+                            `Domain age: ${Math.floor(analysisResult.domain.ageInDays / 365)}y` : 
+                            'Domain age: Unknown'
+                          }
+                        </div>
                       </div>
                       <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl p-4 border border-purple-200 shadow-sm">
                         <div className="text-xs font-semibold text-purple-600 mb-1.5 uppercase tracking-wide">Issues Found</div>
                         <div className="flex items-center gap-2">
                           <span className="text-2xl">{analysisResult.allSignals.length === 0 ? '✅' : '🚨'}</span>
                           <span className="font-bold text-gray-800">{analysisResult.allSignals.length} detected</span>
+                        </div>
+                        <div className="text-xs text-gray-600 mt-1">
+                          {analysisResult.aiEnabled ? 
+                            `${analysisResult.aiSignalsCount || 0} AI + ${analysisResult.allSignals.length - (analysisResult.aiSignalsCount || 0)} heuristic` :
+                            'Heuristic analysis only'
+                          }
+                        </div>
+                      </div>
+                    </div>
+                    
+                    {/* Enhanced Heuristic Analysis Breakdown */}
+                    <div className="bg-gradient-to-br from-gray-50 to-blue-50 rounded-xl p-4 border border-gray-200">
+                      <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
+                        <span className="text-lg">📊</span>Analysis Breakdown
+                      </h3>
+                      <div className="grid grid-cols-2 gap-3 text-xs">
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Security:</span>
+                          <span className={`font-semibold ${analysisResult.security.signals.length === 0 ? 'text-green-600' : 'text-red-600'}`}>
+                            {analysisResult.security.signals.length === 0 ? '✅ Secure' : `${analysisResult.security.signals.length} issues`}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Domain:</span>
+                          <span className={`font-semibold ${analysisResult.domain.signals.length === 0 ? 'text-green-600' : 'text-orange-600'}`}>
+                            {analysisResult.domain.signals.length === 0 ? '✅ Good' : `${analysisResult.domain.signals.length} issues`}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Contact:</span>
+                          <span className={`font-semibold ${analysisResult.contact.signals.length === 0 ? 'text-green-600' : 'text-yellow-600'}`}>
+                            {analysisResult.contact.signals.length === 0 ? '✅ Available' : `${analysisResult.contact.signals.length} missing`}
+                          </span>
+                        </div>
+                        <div className="flex justify-between">
+                          <span className="text-gray-600">Policies:</span>
+                          <span className={`font-semibold ${analysisResult.policies.signals.length === 0 ? 'text-green-600' : 'text-orange-600'}`}>
+                            {analysisResult.policies.signals.length === 0 ? '✅ Complete' : `${analysisResult.policies.signals.length} missing`}
+                          </span>
                         </div>
                       </div>
                     </div>

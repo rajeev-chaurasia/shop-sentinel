@@ -1,0 +1,694 @@
+/**
+ * Page Analysis Service
+ * 
+ * Central orchestrator for all page analysis operations including:
+ * - Page type detection
+ * - Heuristic analysis coordination
+ * - AI analysis integration
+ * - Result aggregation and scoring
+ * 
+ * This service implements TG-06: Full Heuristic Engine Integration
+ * with production-quality error handling, modularity, and performance optimization.
+ */
+
+import { runDomainSecurityChecks } from '../heuristics/domain';
+import { runContentPolicyChecks } from '../heuristics/content';
+import { AIService } from './ai';
+import { RiskCalculator } from './riskCalculator';
+import { FingerprintService } from './fingerprint';
+import { StorageService } from './storage';
+import type { AnalysisResult, PageTypeResult } from '../types';
+
+// Configuration constants
+const ANALYSIS_CONFIG = {
+  AI_MIN_CONFIDENCE_THRESHOLD: 15,
+  FINGERPRINT_TEXT_LIMIT: 20000,
+  ANALYSIS_TIMEOUT_MS: 45000,
+  PARALLEL_BATCH_SIZE: 2,
+} as const;
+
+// Configuration constants for page type detection
+
+/**
+ * Comprehensive page analysis orchestrator
+ * Implements TG-06 with production-quality architecture
+ */
+export class PageAnalyzer {
+  private static instance: PageAnalyzer;
+  private activeAnalyses = new Set<string>();
+
+  private constructor() {}
+
+  static getInstance(): PageAnalyzer {
+    if (!PageAnalyzer.instance) {
+      PageAnalyzer.instance = new PageAnalyzer();
+    }
+    return PageAnalyzer.instance;
+  }
+
+  /**
+   * Main analysis entry point
+   * Coordinates all analysis phases with proper error handling and performance optimization
+   */
+  async analyzePage(
+    url: string,
+    options: {
+      includeAI?: boolean;
+      forceRefresh?: boolean;
+      timeout?: number;
+    } = {}
+  ): Promise<AnalysisResult> {
+    const startTime = performance.now();
+    const analysisId = this.generateAnalysisId(url);
+    
+    console.log(`🔍 Starting comprehensive page analysis for: ${url}`);
+    
+    try {
+      // Prevent duplicate concurrent analyses
+      if (this.activeAnalyses.has(analysisId)) {
+        throw new Error('Analysis already in progress for this page');
+      }
+      
+      this.activeAnalyses.add(analysisId);
+
+      // Phase 1: Page Type Detection
+      const pageTypeResult = this.detectPageType();
+      console.log(`📄 Page Type: ${pageTypeResult.type} (confidence: ${pageTypeResult.confidence}%, signals: ${pageTypeResult.signals.join(', ')})`);
+
+      // Phase 2: Acquire distributed lock and mark progress
+      const lockAcquired = await this.acquireAnalysisLock(url, pageTypeResult.type);
+      if (!lockAcquired) {
+        throw new Error('Analysis already in progress in another tab');
+      }
+      
+      // Mark analysis as in progress so popup polling can detect it
+      await StorageService.setAnalysisInProgress(url, pageTypeResult.type, options.includeAI !== false);
+
+      // Phase 3: Parallel Heuristic Analysis
+      const heuristicResults = await this.runHeuristicAnalysis();
+      
+      // Phase 4: AI Analysis (if enabled and applicable)
+      const aiResults = await this.runAIAnalysis(pageTypeResult, heuristicResults, options.includeAI);
+      
+      // Phase 5: Fingerprint Analysis
+      const fingerprintResults = await this.runFingerprintAnalysis(url);
+      
+      // Phase 6: Result Aggregation and Scoring
+      const finalResult = await this.aggregateAndScoreResults({
+        url,
+        pageType: pageTypeResult,
+        heuristics: heuristicResults,
+        ai: aiResults,
+        fingerprint: fingerprintResults,
+        analysisTime: performance.now() - startTime,
+      });
+
+      // Phase 7: Cache and cleanup
+      await this.cacheAndCleanup(url, pageTypeResult.type, finalResult);
+
+      const totalTime = performance.now() - startTime;
+      console.log('✅ Analysis complete:', {
+        riskLevel: finalResult.riskLevel,
+        totalRiskScore: finalResult.totalRiskScore,
+        signalCount: finalResult.allSignals.length,
+        aiSignals: aiResults.signals.length,
+        pageType: pageTypeResult.type,
+        totalTime: `${totalTime.toFixed(0)}ms`,
+      });
+
+      return finalResult;
+
+    } catch (error) {
+      console.error('❌ Analysis failed:', error);
+      await this.handleAnalysisError(url, error);
+      throw error;
+    } finally {
+      this.activeAnalyses.delete(analysisId);
+    }
+  }
+
+  /**
+   * Detect page type using comprehensive scoring system
+   * Extracted from content script for better modularity
+   */
+  private detectPageType(): PageTypeResult {
+    const path = window.location.pathname.toLowerCase();
+    const title = document.title.toLowerCase();
+    
+    const scores = {
+      checkout: 0,
+      cart: 0,
+      product: 0,
+      category: 0,
+      policy: 0,
+      home: 0,
+    };
+    const signals: string[] = [];
+    
+    // Checkout page detection (highest priority)
+    if (path.includes('checkout') || path.includes('payment')) {
+      scores.checkout += 40;
+      signals.push('checkout-url');
+    }
+    if (title.includes('checkout') || title.includes('payment')) {
+      scores.checkout += 20;
+      signals.push('checkout-title');
+    }
+    if (document.querySelector('[class*="checkout"], [id*="checkout"]')) {
+      scores.checkout += 20;
+      signals.push('checkout-element');
+    }
+    if (document.querySelector('input[type="text"][placeholder*="card"], [class*="payment"]')) {
+      scores.checkout += 30;
+      signals.push('payment-input');
+    }
+    
+    // Cart page detection
+    if (path.includes('cart') || path.includes('basket')) {
+      scores.cart += 40;
+      signals.push('cart-url');
+    }
+    if (title.includes('cart') || title.includes('basket')) {
+      scores.cart += 20;
+      signals.push('cart-title');
+    }
+    if (document.querySelector('[class*="cart-item"], [class*="basket-item"]')) {
+      scores.cart += 30;
+      signals.push('cart-items');
+    }
+    const hasCheckoutButton = document.querySelector('button[class*="checkout"], a[href*="checkout"]');
+    if (hasCheckoutButton) {
+      scores.cart += 15;
+      signals.push('proceed-to-checkout');
+    }
+    
+    // Category/listing page detection (strong signal for e-commerce)
+    const productCards = document.querySelectorAll(
+      '.product-card, .product-item, [class*="product-grid"] > *, [data-product-id], [class*="product-base"], ' +
+      '[data-asin], .s-result-item, .sg-col-inner, .a-section.a-spacing-base, ' +
+      '.s-item, [class*="srp-item"], ' +
+      'article[class*="product"], li[class*="product"], div[data-sku]'
+    ).length;
+    
+    if (productCards > 8) {
+      scores.category += 60;
+      signals.push(`${productCards}-product-cards`);
+    } else if (productCards > 4) {
+      scores.category += 40;
+      signals.push(`${productCards}-product-cards`);
+    } else if (productCards > 2) {
+      scores.category += 20;
+      signals.push(`${productCards}-product-cards`);
+    }
+    
+    // URL patterns for category pages
+    if (path.includes('/category') || path.includes('/collection') || 
+        path.includes('/shop') || path.includes('/search') ||
+        path.includes('/b/') || path.includes('/b?') ||
+        path.includes('/s?') || path.includes('/s/') ||
+        path.includes('/sch/') ||
+        /\/(men|women|kids|boys|girls|unisex)[-\/]/.test(path)) {
+      scores.category += 35;
+      signals.push('category-url');
+    }
+    
+    // Filter/sort controls
+    const filterControls = document.querySelectorAll(
+      '.filter, [class*="filter"], .sort, [class*="sort"], ' +
+      '[id*="filters"], [class*="refinement"], [id*="departments"], ' +
+      'select[name*="sort"], [aria-label*="filter"], [aria-label*="sort"]'
+    ).length;
+    if (filterControls > 0) {
+      scores.category += 25;
+      signals.push('filter-controls');
+    }
+    
+    // Pagination
+    if (document.querySelector('.pagination, [class*="pagination"], [aria-label*="pagination"]')) {
+      scores.category += 20;
+      signals.push('pagination');
+    }
+    
+    // Product page detection
+    if (document.querySelector('[itemtype*="Product"]')) {
+      scores.product += 50;
+      signals.push('product-schema');
+    }
+    
+    const addToCartButton = document.querySelector(
+      'button[name*="add"], button[class*="add-to-cart"], [data-action*="add"], ' +
+      'button[class*="addtocart"], button[class*="add_to_cart"], ' +
+      '[class*="pdp-add"], [class*="add-to-bag"]'
+    );
+    if (addToCartButton) {
+      const addToCartScore = productCards > 3 ? 10 : 35;
+      scores.product += addToCartScore;
+      signals.push('add-to-cart-button');
+    }
+    
+    // Check for "ADD TO BAG/CART/BASKET" text
+    const allButtons = Array.from(document.querySelectorAll('button'));
+    const hasAddButton = allButtons.some(btn => 
+      /add\s+to\s+(cart|bag|basket)/i.test(btn.textContent || '')
+    );
+    if (hasAddButton && productCards < 3) {
+      scores.product += 30;
+      signals.push('add-text-button');
+    }
+    
+    // Product-specific indicators
+    const priceElements = document.querySelectorAll(
+      '[itemprop="price"], .price, [class*="product-price"], [class*="pdp-price"], ' +
+      '[class*="actual-price"], [class*="selling-price"]'
+    ).length;
+    if (priceElements === 1) {
+      scores.product += 25;
+      signals.push('single-price');
+    } else if (priceElements > 1 && priceElements < 5 && productCards < 3) {
+      scores.product += 15;
+      signals.push('few-prices');
+    }
+    
+    // URL patterns for single product
+    if (path.includes('/product') || path.includes('/item') || path.includes('/p/') || 
+        path.includes('/dp/') || path.includes('/gp/product') || path.includes('/buy')) {
+      scores.product += 35;
+      signals.push('product-url');
+    }
+    
+    // Product ID in URL
+    if (/\/\d{5,}/.test(path) && productCards < 3) {
+      scores.product += 40;
+      signals.push('product-id-in-url');
+    }
+    
+    // Product containers
+    if (document.querySelector('.product-detail, #product, [class*="product-info"], [class*="pdp-"], [id*="pdp"]')) {
+      scores.product += 20;
+      signals.push('product-container');
+    }
+    
+    // Size/color selectors
+    const hasSizeSelector = document.querySelector(
+      '[class*="size-"], [class*="sizebutton"], select[name*="size"], ' +
+      'input[name*="size"], [data-size]'
+    );
+    if (hasSizeSelector && productCards < 3) {
+      scores.product += 25;
+      signals.push('size-selector');
+    }
+    
+    // Single product title with price
+    const h1Elements = document.querySelectorAll('h1');
+    if (h1Elements.length === 1 && priceElements > 0 && priceElements < 3) {
+      scores.product += 20;
+      signals.push('single-title-with-price');
+    }
+    
+    // Policy page detection
+    const policyKeywords = ['policy', 'terms', 'privacy', 'return', 'shipping', 'refund'];
+    if (policyKeywords.some(kw => path.includes(kw))) {
+      scores.policy += 50;
+      signals.push('policy-url');
+    }
+    if (policyKeywords.some(kw => title.includes(kw))) {
+      scores.policy += 30;
+      signals.push('policy-title');
+    }
+    const textLength = document.body.innerText.length;
+    if (textLength > 5000 && document.querySelectorAll('h1, h2, h3').length > 5) {
+      scores.policy += 20;
+      signals.push('long-text-content');
+    }
+    
+    // Home page detection
+    if (path === '/' || path === '/index' || path === '/home') {
+      scores.home += 50;
+      signals.push('root-path');
+    }
+    if (document.querySelector('nav a[href*="shop"], nav a[href*="product"]') && path.length < 5) {
+      scores.home += 15;
+      signals.push('navigation-links');
+    }
+    if (document.querySelector('.hero, [class*="banner"], [class*="carousel"]') && path.length < 10) {
+      scores.home += 10;
+      signals.push('hero-section');
+    }
+    
+    // Determine best match
+    const entries = Object.entries(scores) as [keyof typeof scores, number][];
+    entries.sort((a, b) => b[1] - a[1]);
+    
+    const topType = entries[0][0];
+    const topScore = entries[0][1];
+    
+    if (topScore < 15) {
+      return { type: 'other', confidence: 0, signals: ['no-clear-signals'] };
+    }
+    
+    return {
+      type: topType as any,
+      confidence: Math.min(topScore, 100),
+      signals,
+    };
+  }
+
+  /**
+   * Run all heuristic checks in parallel for optimal performance
+   */
+  private async runHeuristicAnalysis() {
+    console.log('🔍 Running parallel heuristic analysis...');
+    
+    try {
+      const [domainSecurityResults, contentPolicyResults] = await Promise.all([
+        runDomainSecurityChecks(),
+        runContentPolicyChecks()
+      ]);
+      
+      console.log('✅ Heuristic analysis complete:', {
+        securitySignals: domainSecurityResults.security.signals.length,
+        domainSignals: domainSecurityResults.domain.signals.length,
+        paymentSignals: domainSecurityResults.payment.signals.length,
+        contactSignals: contentPolicyResults.contact.signals.length,
+        policySignals: contentPolicyResults.policies.signals.length,
+        socialProofAudit: contentPolicyResults.contact.socialProofAudit ? {
+          total: contentPolicyResults.contact.socialProofAudit.totalProfiles,
+          valid: contentPolicyResults.contact.socialProofAudit.validProfiles,
+          rate: `${contentPolicyResults.contact.socialProofAudit.validationRate}%`,
+        } : null,
+      });
+      
+      return {
+        security: domainSecurityResults.security,
+        domain: domainSecurityResults.domain,
+        payment: domainSecurityResults.payment,
+        contact: contentPolicyResults.contact,
+        policies: contentPolicyResults.policies,
+      };
+    } catch (error) {
+      console.error('❌ Heuristic analysis failed:', error);
+      throw new Error(`Heuristic analysis failed: ${error instanceof Error ? error.message : 'Unknown error'}`);
+    }
+  }
+
+  /**
+   * Run AI analysis with proper error handling and fallbacks
+   */
+  private async runAIAnalysis(
+    pageType: PageTypeResult, 
+    heuristics: any, 
+    includeAI?: boolean
+  ) {
+    const aiResults = {
+      signals: [] as any[],
+      analysisTime: 0,
+      error: null as string | null,
+    };
+
+    if (!includeAI) {
+      console.log('⏭️ AI analysis disabled');
+      return aiResults;
+    }
+
+    try {
+      const aiStatus = await AIService.checkAvailability();
+      const aiAvailable = aiStatus.available;
+      console.log('🤖 AI Status:', aiStatus);
+      
+      const shouldRunAI = aiAvailable && 
+                         pageType.confidence > ANALYSIS_CONFIG.AI_MIN_CONFIDENCE_THRESHOLD &&
+                         pageType.type !== 'policy' &&
+                         pageType.type !== 'other';
+      
+      if (!shouldRunAI) {
+        const reason = !aiAvailable ? 'AI not available' : 
+                       pageType.confidence <= ANALYSIS_CONFIG.AI_MIN_CONFIDENCE_THRESHOLD ? 'low page type confidence' :
+                       pageType.type === 'policy' ? 'policy page' :
+                       pageType.type === 'other' ? 'unknown page type' :
+                       'AI disabled';
+        console.log(`⏭️ Skipping AI analysis: ${reason}`);
+        return aiResults;
+      }
+
+      console.log(`🤖 Running AI-powered analysis for ${pageType.type} page...`);
+      const aiStartTime = performance.now();
+      
+      // Initialize AI session
+      const initialized = await AIService.initializeSession();
+      if (!initialized) {
+        throw new Error('AI session failed to initialize');
+      }
+
+      // Prepare page content for AI analysis
+      const pageContent = this.preparePageContentForAI(pageType, heuristics);
+      
+      // Run AI analyses in parallel
+      const analyses: Promise<any[]>[] = [];
+      analyses.push(AIService.analyzeDarkPatterns(pageContent));
+      
+      // Context-aware legitimacy analysis
+      if (['product', 'checkout', 'home'].includes(pageType.type)) {
+        const legitimacyContext = this.prepareLegitimacyContext(heuristics);
+        analyses.push(AIService.analyzeLegitimacy(legitimacyContext));
+      }
+      
+      const results = await Promise.all(analyses);
+      aiResults.signals = results.flat();
+      aiResults.analysisTime = performance.now() - aiStartTime;
+      
+      console.log(`✅ AI found ${aiResults.signals.length} signals in ${aiResults.analysisTime.toFixed(0)}ms`);
+      
+    } catch (error) {
+      aiResults.error = error instanceof Error ? error.message : 'Unknown AI error';
+      console.error(`⚠️ AI analysis failed:`, error);
+    }
+    
+    return aiResults;
+  }
+
+  /**
+   * Run fingerprint-based change detection
+   */
+  private async runFingerprintAnalysis(url: string) {
+    const fingerprintResults = {
+      signals: [] as any[],
+      error: null as string | null,
+    };
+
+    try {
+      const domainName = window.location.hostname.replace(/^www\./, '');
+      const pageText = (document.body?.innerText || '').slice(0, ANALYSIS_CONFIG.FINGERPRINT_TEXT_LIMIT);
+      
+      fingerprintResults.signals = await FingerprintService.checkDomainChange(
+        domainName, 
+        pageText, 
+        url
+      );
+      
+      console.log(`🔍 Fingerprint analysis found ${fingerprintResults.signals.length} signals`);
+      
+    } catch (error) {
+      fingerprintResults.error = error instanceof Error ? error.message : 'Unknown fingerprint error';
+      console.warn('⚠️ Fingerprint analysis failed:', error);
+    }
+    
+    return fingerprintResults;
+  }
+
+  /**
+   * Aggregate all results and calculate final risk score
+   */
+  private async aggregateAndScoreResults(data: {
+    url: string;
+    pageType: PageTypeResult;
+    heuristics: any;
+    ai: any;
+    fingerprint: any;
+    analysisTime: number;
+  }): Promise<AnalysisResult> {
+    // Collect all signals
+    const allSignals = [
+      ...data.heuristics.security.signals,
+      ...data.heuristics.domain.signals,
+      ...data.heuristics.payment.signals,
+      ...data.heuristics.contact.signals,
+      ...data.heuristics.policies.signals,
+      ...data.ai.signals,
+      ...data.fingerprint.signals,
+    ];
+    
+    // Calculate risk score using smart calculator
+    const riskAnalysis = RiskCalculator.calculateScore(allSignals);
+    
+    // Build comprehensive analysis result
+    const result: AnalysisResult = {
+      url: data.url,
+      timestamp: Date.now(),
+      pageType: data.pageType.type,
+      pageTypeConfidence: data.pageType.confidence,
+      security: data.heuristics.security,
+      domain: data.heuristics.domain,
+      payment: data.heuristics.payment,
+      contact: data.heuristics.contact,
+      policies: data.heuristics.policies,
+      totalRiskScore: riskAnalysis.totalScore,
+      riskLevel: riskAnalysis.riskLevel,
+      allSignals,
+      riskBreakdown: riskAnalysis.breakdown,
+      topConcerns: riskAnalysis.topConcerns,
+      analysisVersion: '2.0.0',
+      isEcommerceSite: true,
+      aiEnabled: !data.ai.error,
+      aiSignalsCount: data.ai.signals.length,
+    };
+    
+    return result;
+  }
+
+  /**
+   * Prepare page content for AI analysis with enhanced context
+   */
+  private preparePageContentForAI(pageType: PageTypeResult, _heuristics: any) {
+    return {
+      url: window.location.href,
+      title: document.title,
+      pageType: pageType.type,
+      confidence: pageType.confidence,
+      headings: Array.from(document.querySelectorAll('h1, h2, h3, h4'))
+        .map(el => el.textContent?.trim() || '')
+        .filter(text => text.length > 0 && text.length < 200)
+        .slice(0, 15),
+      buttons: Array.from(document.querySelectorAll('button, a.btn, input[type="submit"], [role="button"]'))
+        .map(el => {
+          const text = el.textContent?.trim() || (el as HTMLInputElement).value || '';
+          const ariaLabel = el.getAttribute('aria-label')?.trim() || '';
+          return text || ariaLabel;
+        })
+        .filter(text => text.length > 0 && text.length < 100)
+        .slice(0, 25),
+      forms: Array.from(document.querySelectorAll('form'))
+        .map((form, index) => {
+          const id = form.id || form.className || `form-${index}`;
+          const inputs = Array.from(form.querySelectorAll('input, select, textarea')).length;
+          return `${id} (${inputs} fields)`;
+        })
+        .filter(text => text.length > 0)
+        .slice(0, 8),
+    };
+  }
+
+  /**
+   * Prepare legitimacy analysis context with comprehensive data
+   */
+  private prepareLegitimacyContext(heuristics: any) {
+    const pageText = document.body.innerText || '';
+    
+    // Extract social media data
+    const socialMediaData = {
+      facebook: heuristics.contact.socialMediaProfiles.find((p: any) => p.platform === 'facebook')?.url || null,
+      twitter: heuristics.contact.socialMediaProfiles.find((p: any) => p.platform === 'twitter')?.url || null,
+      instagram: heuristics.contact.socialMediaProfiles.find((p: any) => p.platform === 'instagram')?.url || null,
+      linkedin: heuristics.contact.socialMediaProfiles.find((p: any) => p.platform === 'linkedin')?.url || null,
+      youtube: heuristics.contact.socialMediaProfiles.find((p: any) => p.platform === 'youtube')?.url || null,
+      count: heuristics.contact.socialMediaProfiles.length,
+    };
+    
+    return {
+      url: window.location.href,
+      title: document.title,
+      content: pageText.slice(0, 1500),
+      hasHTTPS: heuristics.security.isHttps,
+      hasContactInfo: heuristics.contact.hasContactPage || heuristics.contact.hasEmail || heuristics.contact.hasPhoneNumber,
+      hasPolicies: heuristics.policies.hasReturnPolicy || heuristics.policies.hasPrivacyPolicy,
+      socialMedia: socialMediaData,
+      domainAge: heuristics.domain.ageInDays,
+      domainAgeYears: heuristics.domain.ageInDays ? Math.floor(heuristics.domain.ageInDays / 365) : null,
+      domainStatus: heuristics.domain.status,
+      domainRegistrar: heuristics.domain.registrar,
+    };
+  }
+
+  /**
+   * Cache analysis result and perform cleanup
+   */
+  private async cacheAndCleanup(url: string, pageType: string, result: AnalysisResult) {
+    try {
+      await StorageService.cacheAnalysis(url, pageType, result);
+      await StorageService.clearAnalysisProgress(url);
+      console.log(`💾 Analysis cached: ${pageType}`);
+    } catch (error) {
+      console.warn('⚠️ Failed to cache analysis:', error);
+    } finally {
+      await StorageService.releaseAnalysisLock(url, pageType);
+    }
+  }
+
+  /**
+   * Handle analysis errors with proper cleanup
+   */
+  private async handleAnalysisError(url: string, _error: any) {
+    try {
+      const pageTypeResult = this.detectPageType();
+      await StorageService.clearAnalysisProgress(url);
+      await StorageService.releaseAnalysisLock(url, pageTypeResult.type);
+    } catch (cleanupError) {
+      console.error('⚠️ Error during cleanup:', cleanupError);
+    }
+  }
+
+  /**
+   * Acquire distributed analysis lock
+   */
+  private async acquireAnalysisLock(url: string, pageType: string): Promise<boolean> {
+    try {
+      return await StorageService.acquireAnalysisLock(url, pageType);
+    } catch (error) {
+      console.error('❌ Failed to acquire analysis lock:', error);
+      return false;
+    }
+  }
+
+  /**
+   * Generate unique analysis ID for deduplication
+   */
+  private generateAnalysisId(url: string): string {
+    return `analysis_${url}_${Date.now()}`;
+  }
+
+  /**
+   * Get cached analysis result if available
+   */
+  async getCachedAnalysis(url: string, pageType?: string): Promise<AnalysisResult | null> {
+    try {
+      let resolvedPageType = pageType;
+      if (!resolvedPageType) {
+        const pageTypeResult = this.detectPageType();
+        resolvedPageType = pageTypeResult.type;
+      }
+      return await StorageService.getCachedAnalysis(url, resolvedPageType);
+    } catch (error) {
+      console.error('❌ Failed to get cached analysis:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Check if analysis is currently in progress
+   */
+  async isAnalysisInProgress(url: string, pageType?: string): Promise<boolean> {
+    try {
+      let resolvedPageType = pageType;
+      if (!resolvedPageType) {
+        const pageTypeResult = this.detectPageType();
+        resolvedPageType = pageTypeResult.type;
+      }
+      return await StorageService.isAnalysisInProgress(url, resolvedPageType);
+    } catch (error) {
+      console.error('❌ Failed to check analysis progress:', error);
+      return false;
+    }
+  }
+}
+
+// Export singleton instance
+export const pageAnalyzer = PageAnalyzer.getInstance();

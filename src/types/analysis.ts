@@ -38,6 +38,9 @@ export interface SocialMediaProfile {
   platform: string;
   url: string;
   location: 'footer' | 'header' | 'body' | 'unknown';
+  isValid?: boolean; // Whether the URL was validated as accessible
+  validationError?: string; // Error message if validation failed
+  validatedAt?: number; // Timestamp of validation
 }
 
 export interface ContactAnalysis {
@@ -46,8 +49,15 @@ export interface ContactAnalysis {
   hasPhysicalAddress: boolean;
   hasEmail: boolean;
   socialMediaLinks: string[]; // Kept for backward compatibility
-  socialMediaProfiles: SocialMediaProfile[]; // Enhanced structured data
+  socialMediaProfiles: SocialMediaProfile[]; // Enhanced structured data with validation
   signals: RiskSignal[];
+  socialProofAudit?: {
+    totalProfiles: number;
+    validProfiles: number;
+    invalidProfiles: number;
+    validationRate: number; // Percentage of valid profiles
+    lastValidatedAt: number;
+  };
 }
 
 export interface PolicyAnalysis {
@@ -89,10 +99,17 @@ export interface AIAnalysis {
   rawResponse?: any;
 }
 
+export interface PageTypeResult {
+  type: 'home' | 'product' | 'category' | 'checkout' | 'cart' | 'policy' | 'other';
+  confidence: number; // 0-100
+  signals: string[]; // What made us decide this
+}
+
 export interface AnalysisResult {
   url: string;
   timestamp: number;
-  pageType?: string; // Page type detected (home, product, checkout, etc.)
+  pageType: string; // Page type detected (home, product, checkout, etc.)
+  pageTypeConfidence?: number; // Confidence in page type detection
   security: SecurityAnalysis;
   domain: DomainAnalysis;
   contact: ContactAnalysis;
@@ -102,10 +119,14 @@ export interface AnalysisResult {
   totalRiskScore: number;
   riskLevel: RiskSeverity;
   allSignals: RiskSignal[];
+  riskBreakdown?: any; // Risk breakdown by category
+  topConcerns?: RiskSignal[]; // Top risk signals
   analysisVersion: string;
   isEcommerceSite: boolean;
   aiEnabled?: boolean;
   aiSignalsCount?: number;
+  status?: 'success' | 'error' | 'in_progress'; // Analysis status
+  error?: string; // Error message if analysis failed
 }
 
 export interface PolicySummary {
