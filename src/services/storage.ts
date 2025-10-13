@@ -24,15 +24,33 @@ const CACHE_DURATION_MS = 15 * 60 * 1000;      // 15 minutes
 const PROGRESS_TIMEOUT_MS = 60 * 1000;         // 60 seconds
 const LOCK_TIMEOUT_MS = 90 * 1000;             // 90 seconds (longer than analysis typically takes)
 
+/**
+ * Check if the extension context is valid and Chrome APIs are available
+ */
+function isExtensionContextValid(): boolean {
+  return !!(chrome?.storage?.local && typeof chrome.storage.local.get === 'function');
+}
+
 export const StorageService = {
   /**
    * Get a value from Chrome storage
    */
   async get<T>(key: string): Promise<T | null> {
     try {
+      // Check if Chrome APIs are available and context is valid
+      if (!isExtensionContextValid()) {
+        console.error('❌ Chrome storage API not available - extension context may be invalidated');
+        return null;
+      }
+      
       const result = await chrome.storage.local.get(key);
       return result[key] ?? null;
     } catch (error) {
+      // Handle extension context invalidation specifically
+      if (error instanceof Error && error.message.includes('Extension context invalidated')) {
+        console.error('❌ Extension context invalidated - extension may have been reloaded');
+        return null;
+      }
       console.error('Error getting from storage:', error);
       return null;
     }
@@ -43,9 +61,20 @@ export const StorageService = {
    */
   async set<T>(key: string, value: T): Promise<boolean> {
     try {
+      // Check if Chrome APIs are available and context is valid
+      if (!isExtensionContextValid()) {
+        console.error('❌ Chrome storage API not available - extension context may be invalidated');
+        return false;
+      }
+      
       await chrome.storage.local.set({ [key]: value });
       return true;
     } catch (error) {
+      // Handle extension context invalidation specifically
+      if (error instanceof Error && error.message.includes('Extension context invalidated')) {
+        console.error('❌ Extension context invalidated - extension may have been reloaded');
+        return false;
+      }
       console.error('Error setting in storage:', error);
       return false;
     }
@@ -56,9 +85,20 @@ export const StorageService = {
    */
   async remove(key: string): Promise<boolean> {
     try {
+      // Check if Chrome APIs are available and context is valid
+      if (!isExtensionContextValid()) {
+        console.error('❌ Chrome storage API not available - extension context may be invalidated');
+        return false;
+      }
+      
       await chrome.storage.local.remove(key);
       return true;
     } catch (error) {
+      // Handle extension context invalidation specifically
+      if (error instanceof Error && error.message.includes('Extension context invalidated')) {
+        console.error('❌ Extension context invalidated - extension may have been reloaded');
+        return false;
+      }
       console.error('Error removing from storage:', error);
       return false;
     }
@@ -69,9 +109,20 @@ export const StorageService = {
    */
   async clear(): Promise<boolean> {
     try {
+      // Check if Chrome APIs are available and context is valid
+      if (!isExtensionContextValid()) {
+        console.error('❌ Chrome storage API not available - extension context may be invalidated');
+        return false;
+      }
+      
       await chrome.storage.local.clear();
       return true;
     } catch (error) {
+      // Handle extension context invalidation specifically
+      if (error instanceof Error && error.message.includes('Extension context invalidated')) {
+        console.error('❌ Extension context invalidated - extension may have been reloaded');
+        return false;
+      }
       console.error('Error clearing storage:', error);
       return false;
     }

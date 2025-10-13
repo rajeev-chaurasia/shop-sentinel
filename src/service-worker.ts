@@ -10,12 +10,35 @@
  * with production-quality error handling and performance optimization.
  */
 
-import { 
-  MessageRequest, 
-  MessageResponse, 
-  createSuccessResponse, 
-  createErrorResponse
-} from './types/messages';
+// Inline message utilities to avoid ES6 import issues in service worker
+interface MessageRequest {
+  action: string;
+  payload: any;
+  timestamp: number;
+}
+
+interface MessageResponse {
+  success: boolean;
+  data?: any;
+  error?: string;
+  timestamp: number;
+}
+
+function createSuccessResponse(data: any): MessageResponse {
+  return {
+    success: true,
+    data,
+    timestamp: Date.now(),
+  };
+}
+
+function createErrorResponse(error: string): MessageResponse {
+  return {
+    success: false,
+    error,
+    timestamp: Date.now(),
+  };
+}
 
 // Configuration constants
 const VALIDATION_CONFIG = {
