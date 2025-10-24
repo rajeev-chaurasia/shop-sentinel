@@ -5,9 +5,6 @@
  * - Social media URL validation
  * - Network requests with proper error handling
  * - Message routing between content scripts and popup
- * 
- * This service worker implements TG-11: Social Proof Audit
- * with production-quality error handling and performance optimization.
  */
 
 // Inline message utilities to avoid ES6 import issues in service worker
@@ -48,6 +45,83 @@ const VALIDATION_CONFIG = {
   RETRY_DELAY: 1000, // 1 second
   CACHE_DURATION: 5 * 60 * 1000, // 5 minutes
 } as const;
+
+// Types for tab state management
+interface TabState {
+  riskLevel: 'safe' | 'low' | 'medium' | 'high' | 'critical';
+  badgeText: string;
+  url: string;
+  timestamp: number;
+}
+
+// In-memory storage for tab states (persists during session)
+const tabStates = new Map<number, TabState>();
+
+/**
+ * Update extension icon badge for a specific tab
+ */
+async function updateIconForTab(tabId: number, riskLevel: string, badgeText: string, url: string) {
+  try {
+    // Determine badge color based on risk level
+    let badgeColor: [number, number, number, number];
+    
+    switch (riskLevel) {
+      case 'safe':
+        badgeColor = [16, 185, 129, 255]; // green-500
+        break;
+      case 'low':
+        badgeColor = [132, 204, 22, 255]; // lime-500
+        break;
+      case 'medium':
+        badgeColor = [245, 158, 11, 255]; // amber-500
+        break;
+      case 'high':
+        badgeColor = [249, 115, 22, 255]; // orange-500
+        break;
+      case 'critical':
+        badgeColor = [239, 68, 68, 255]; // red-500
+        break;
+      default:
+        badgeColor = [156, 163, 175, 255]; // gray-400
+    }
+    
+    // Set badge text and color for this specific tab
+    await chrome.action.setBadgeText({ text: badgeText, tabId });
+    await chrome.action.setBadgeBackgroundColor({ color: badgeColor, tabId });
+    
+    // Store tab state
+    tabStates.set(tabId, {
+      riskLevel: riskLevel as any,
+      badgeText,
+      url,
+      timestamp: Date.now(),
+    });
+    
+    console.log(`✅ Icon updated for tab ${tabId}: ${riskLevel} (${badgeText})`);
+  } catch (error) {
+    console.error(`❌ Failed to update icon for tab ${tabId}:`, error);
+  }
+}
+
+/**
+ * Clear badge for a specific tab
+ */
+async function clearIconForTab(tabId: number) {
+  try {
+    await chrome.action.setBadgeText({ text: '', tabId });
+    tabStates.delete(tabId);
+    console.log(`🧹 Badge cleared for tab ${tabId}`);
+  } catch (error) {
+    console.error(`❌ Failed to clear badge for tab ${tabId}:`, error);
+  }
+}
+
+/**
+ * Get stored tab state
+ */
+function getTabState(tabId: number): TabState | null {
+  return tabStates.get(tabId) || null;
+}
 
 // Social media platform configurations
 const SOCIAL_PLATFORMS = {
@@ -527,7 +601,7 @@ const messageHandlers = {
  */
 chrome.runtime.onMessage.addListener((
   message: unknown,
-  _sender: chrome.runtime.MessageSender,
+  sender: chrome.runtime.MessageSender,
   sendResponse: (response: MessageResponse) => void
 ): boolean => {
   console.log('📨 Service worker received message:', message);
@@ -541,6 +615,115 @@ chrome.runtime.onMessage.addListener((
   const typedMessage = message as MessageRequest;
   console.log(`🔍 Handling action: ${typedMessage.action}`);
   
+  // Handle special cases that need sender information
+  const tabId = sender.tab?.id;
+  
+  switch (typedMessage.action) {
+    case 'UPDATE_ICON':
+      // Handle both content script (with sender.tab) and popup messages
+      let targetTabId = tabId;
+      
+      if (!targetTabId) {
+        // If no tabId from sender (popup message), get the active tab
+        try {
+          // This is async, so we need to handle it differently
+          chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+            const activeTab = tabs[0];
+            if (activeTab?.id) {
+              const { riskLevel, badgeText } = typedMessage.payload;
+              const url = activeTab.url || '';
+              updateIconForTab(activeTab.id, riskLevel, badgeText, url)
+                .then(() => {
+                  // Send response if still waiting
+                  try {
+                    if (sendResponse) {
+                      sendResponse(createSuccessResponse({ success: true }));
+                    }
+                  } catch (e) {
+                    // Response already sent
+                  }
+                })
+                .catch(error => {
+                  try {
+                    if (sendResponse) {
+                      sendResponse(createErrorResponse(error.message));
+                    }
+                  } catch (e) {
+                    // Response already sent
+                  }
+                });
+            } else {
+              sendResponse(createErrorResponse('No active tab found'));
+            }
+          });
+          return true; // Keep channel open for async response
+        } catch (error) {
+          sendResponse(createErrorResponse('Failed to get active tab'));
+          return false;
+        }
+      } else {
+        // Content script message with tabId
+        const { riskLevel, badgeText } = typedMessage.payload;
+        const url = sender.tab?.url || '';
+        updateIconForTab(targetTabId, riskLevel, badgeText, url)
+          .then(() => sendResponse(createSuccessResponse({ success: true })))
+          .catch(error => sendResponse(createErrorResponse(error.message)));
+        return true;
+      }
+      
+    case 'CLEAR_ICON':
+      if (tabId) {
+        clearIconForTab(tabId)
+          .then(() => sendResponse(createSuccessResponse({ success: true })))
+          .catch(error => sendResponse(createErrorResponse(error.message)));
+        return true;
+      } else {
+        sendResponse(createErrorResponse('No tab ID available'));
+        return false;
+      }
+      
+    case 'GET_TAB_STATE':
+      if (tabId) {
+        const state = getTabState(tabId);
+        sendResponse(createSuccessResponse(state));
+      } else {
+        sendResponse(createErrorResponse('No tab ID available'));
+      }
+      return false;
+      
+    case 'SET_TAB_STATE':
+      if (tabId && typedMessage.payload) {
+        const { riskLevel, badgeText, url } = typedMessage.payload;
+        updateIconForTab(tabId, riskLevel, badgeText, url)
+          .then(() => sendResponse(createSuccessResponse({ success: true })))
+          .catch(error => sendResponse(createErrorResponse(error.message)));
+        return true;
+      } else {
+        sendResponse(createErrorResponse('Invalid payload or tab ID'));
+        return false;
+      }
+      
+    case 'CLEAR_TAB_STATE':
+      if (tabId) {
+        clearIconForTab(tabId)
+          .then(() => sendResponse(createSuccessResponse({ success: true })))
+          .catch(error => sendResponse(createErrorResponse(error.message)));
+        return true;
+      } else {
+        sendResponse(createErrorResponse('No tab ID available'));
+        return false;
+      }
+      
+    case 'GET_TAB_ID':
+      if (tabId) {
+        sendResponse(createSuccessResponse({ tabId }));
+      } else {
+        sendResponse(createErrorResponse('No tab ID available'));
+      }
+      return false;
+  }
+  
+  // Handle other actions with the messageHandlers object
   const handler = messageHandlers[typedMessage.action as keyof typeof messageHandlers];
 
   if (!handler) {
@@ -580,6 +763,37 @@ chrome.runtime.onMessage.addListener((
     console.error(`❌ Synchronous handler ${typedMessage.action} error:`, error);
     sendResponse(createErrorResponse(error.message || 'Handler execution error'));
     return false;
+  }
+});
+
+// Tab event listeners for badge management
+chrome.tabs.onActivated.addListener(async (activeInfo) => {
+  const tabId = activeInfo.tabId;
+  const state = getTabState(tabId);
+  
+  if (state) {
+    console.log(`🔄 Tab ${tabId} activated - restoring badge:`, state.riskLevel);
+    await updateIconForTab(tabId, state.riskLevel, state.badgeText, state.url);
+  }
+});
+
+chrome.tabs.onUpdated.addListener(async (tabId, changeInfo, _tab) => {
+  // Only act on navigation (URL changed and page started loading)
+  if (changeInfo.status === 'loading' && changeInfo.url) {
+    const storedState = getTabState(tabId);
+    
+    // If URL changed, clear the old badge
+    if (storedState && storedState.url !== changeInfo.url) {
+      console.log(`🔄 Tab ${tabId} navigated to new URL - clearing badge`);
+      await clearIconForTab(tabId);
+    }
+  }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (tabStates.has(tabId)) {
+    console.log(`🗑️ Tab ${tabId} closed - removing state`);
+    tabStates.delete(tabId);
   }
 });
 

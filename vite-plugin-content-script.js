@@ -47,31 +47,8 @@ export function contentScriptPlugin() {
 
         console.log('✅ Content script built');
         
-        // Build background service worker
-        console.log('\n🔨 Building background service worker...');
-        
-        await build({
-          configFile: false,
-          build: {
-            outDir: 'dist',
-            emptyOutDir: false,
-            lib: {
-              entry: resolve(__dirname, 'src/background/background.ts'),
-              name: 'BackgroundWorker',
-              formats: ['iife'],
-              fileName: () => 'background.js',
-            },
-            rollupOptions: {
-              output: {
-                extend: true,
-                inlineDynamicImports: true,
-              },
-            },
-            minify: true,
-          },
-        });
-
-        console.log('✅ Background service worker built');
+        // Note: Service worker is built by main vite config
+        console.log('✅ Service worker already built by main config');
       } catch (error) {
         console.error('❌ Build failed:', error);
         throw error;

@@ -412,7 +412,7 @@ export class PageAnalyzer {
 
     try {
       const aiStatus = await AIService.checkAvailability();
-      const aiAvailable = aiStatus.available;
+      const aiAvailable = aiStatus;
       console.log('🤖 AI Status:', aiStatus);
       
       const shouldRunAI = aiAvailable && 

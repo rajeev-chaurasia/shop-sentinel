@@ -35,6 +35,20 @@ function App() {
     );
   };
 
+  // Update icon badge when loading cached results
+  const updateIconForCachedResult = async (result: AnalysisResult) => {
+    try {
+      const riskLevel = result.riskLevel || 'safe';
+      const badgeText = result.totalRiskScore > 0 ? result.totalRiskScore.toString() : '';
+      
+      // Send UPDATE_ICON message to the active tab's content script
+      await MessagingService.sendToActiveTab('UPDATE_ICON', { riskLevel, badgeText });
+      console.log(`✅ Icon update sent to content script: ${riskLevel} (${badgeText})`);
+    } catch (error) {
+      console.error('❌ Failed to update icon for cached result:', error);
+    }
+  };
+
   useEffect(() => {
     initializePopup();
     
@@ -62,6 +76,8 @@ function App() {
           if (cached && isValidAnalysisResult(cached)) {
             console.log(`✅ Analysis completed! Loading result (${pageType})...`);
             setAnalysisResult(cached);
+            // Update icon badge for cached results
+            updateIconForCachedResult(cached);
             completeAnalysis();
             setIsFromCache(true);
             clearInterval(interval);
@@ -127,11 +143,15 @@ function App() {
             if (cached.result && !cached.expiresAt) {
               if (isValidAnalysisResult(cached)) {
                 setAnalysisResult(cached);
+                // Update icon badge for cached results
+                updateIconForCachedResult(cached);
                 if (isLoading) completeAnalysis();
               }
             } else if (cached.result && Date.now() < cached.expiresAt) {
               if (isValidAnalysisResult(cached.result)) {
                 setAnalysisResult(cached.result);
+                // Update icon badge for cached results
+                updateIconForCachedResult(cached.result);
                 if (isLoading) completeAnalysis();
               }
             }
@@ -210,6 +230,8 @@ function App() {
       if (cached && isValidAnalysisResult(cached)) {
         console.log(`✅ Cache hit for ${pageType}:`, cached);
         setAnalysisResult(cached);
+        // Update icon badge for cached results
+        updateIconForCachedResult(cached);
         setIsFromCache(true);
       } else {
         console.log(`❌ No cache found for ${pageType} - ready to analyze`);
