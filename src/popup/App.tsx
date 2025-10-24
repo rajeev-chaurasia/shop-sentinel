@@ -3,7 +3,7 @@ import { useAnalysisStore } from '../stores';
 import { MessagingService } from '../services/messaging';
 import { StorageService } from '../services/storage';
 import type { AnalysisResult } from '../types';
-import { AIProgressIndicator, RiskMeter, ReasonsList, PolicySummary } from '../components';
+import { RiskMeter, ReasonsList, PolicySummary } from '../components';
 
 function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'reasons' | 'policies'>('overview');
@@ -11,6 +11,7 @@ function App() {
   const [isFromCache, setIsFromCache] = useState(false);
   const [pollInterval, setPollInterval] = useState<number | null>(null);
   const [annotationsVisible, setAnnotationsVisible] = useState(false);
+  const [isUpdating, setIsUpdating] = useState(false); // Prevent race conditions
   
   const {
     currentUrl,
@@ -21,8 +22,18 @@ function App() {
     setAnalysisResult,
     completeAnalysis,
     setError,
-    clearError,
   } = useAnalysisStore();
+
+  // Validate that an object is a full AnalysisResult (not an in-progress/status payload)
+  const isValidAnalysisResult = (data: any): data is AnalysisResult => {
+    return (
+      data && typeof data === 'object' &&
+      typeof data.totalRiskScore === 'number' &&
+      typeof data.riskLevel === 'string' &&
+      data.security && typeof data.security === 'object' &&
+      Array.isArray(data.allSignals)
+    );
+  };
 
   useEffect(() => {
     initializePopup();
@@ -32,127 +43,123 @@ function App() {
         clearInterval(pollInterval);
       }
     };
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  }, []);
 
-  // Poll for results when in loading state
+  // Poll for results when in loading state (non-blocking, no isUpdating guard)
   useEffect(() => {
-    let interval: number | null = null;
-    
     if (isLoading && !pollInterval) {
       console.log('⏳ Starting poll for analysis completion');
-      interval = setInterval(async () => {
+      const interval = setInterval(async () => {
         try {
           const tab = await MessagingService.getActiveTab();
-          if (!tab?.url) {
-            console.log('⚠️ No active tab during polling');
-            return;
-          }
+          if (!tab?.url) return;
 
-          // Get current page type and check if analysis is still in progress
           const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
-          if (!pageInfoResponse.success || !pageInfoResponse.data) {
-            console.log('⚠️ Failed to get page info during polling');
-            return;
-          }
+          if (!pageInfoResponse.success || !pageInfoResponse.data) return;
 
           const pageType = pageInfoResponse.data.pageType || 'other';
-          const isStillInProgress = pageInfoResponse.data.isAnalysisInProgress || false;
-          
-          console.log(`🔍 Polling: pageType=${pageType}, isInProgress=${isStillInProgress}`);
-          
-          // If analysis is no longer in progress, check cache
-          if (!isStillInProgress) {
-            console.log(`🔍 Analysis no longer in progress, checking cache for ${pageType}...`);
-            const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
-            if (cached) {
-              console.log(`✅ Analysis completed! Loading result (${pageType}):`, cached);
-              clearError(); // Clear any errors before showing results
-              setAnalysisResult(cached);
-              completeAnalysis();
-              setIsFromCache(true);
-              if (interval) clearInterval(interval);
-              setPollInterval(null);
-              return;
-            } else {
-              console.log(`⚠️ Analysis no longer in progress but no cache found for ${pageType}`);
-              // Analysis might have failed, stop polling
-              completeAnalysis();
-              if (interval) clearInterval(interval);
-              setPollInterval(null);
-              return;
-            }
-          } else {
-            console.log(`⏳ Analysis still in progress for ${pageType}, continuing to poll...`);
+          const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
+          if (cached && isValidAnalysisResult(cached)) {
+            console.log(`✅ Analysis completed! Loading result (${pageType})...`);
+            setAnalysisResult(cached);
+            completeAnalysis();
+            setIsFromCache(true);
+            clearInterval(interval);
+            setPollInterval(null);
           }
         } catch (error) {
-          console.error('❌ Poll error:', error);
+          console.error('Poll error:', error);
         }
-      }, 2000); // Check every 2 seconds
-      
+      }, 1500);
+
       setPollInterval(interval);
     } else if (!isLoading && pollInterval) {
-      console.log('🛑 Stopping poll (no longer loading)');
       clearInterval(pollInterval);
       setPollInterval(null);
     }
-    
-    // Cleanup on unmount
-    return () => {
-      if (interval) {
-        clearInterval(interval);
-      }
-      if (pollInterval) {
-        clearInterval(pollInterval);
-      }
-    };
-  }, [isLoading]); // Removed pollInterval from deps to prevent infinite loop
+  }, [isLoading, pollInterval]);
+
+  // Safety net: in case storage event is missed, re-check cache once after 8s of loading
+  useEffect(() => {
+    if (!isLoading) return;
+    const t = setTimeout(() => {
+      loadCachedAnalysis();
+    }, 8000);
+    return () => clearTimeout(t);
+  }, [isLoading]);
 
   // Monitor cross-tab storage changes for live updates
   useEffect(() => {
+    let updateTimeout: number | null = null;
+    
     const handleStorageChange = async (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
       if (areaName !== 'local') return;
       
-      try {
-        const tab = await MessagingService.getActiveTab();
-        if (!tab?.url) return;
-        
-        const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
-        if (!pageInfoResponse.success || !pageInfoResponse.data) return;
-        
-        const pageType = pageInfoResponse.data.pageType || 'other';
-        const cacheKey = `analysis_${new URL(tab.url).hostname.replace(/^www\./, '')}:${pageType}`;
-        
-        // Check if analysis completed in another tab
-        if (changes[cacheKey] && changes[cacheKey].newValue) {
-          console.log('📡 Analysis completed in another tab, updating...');
-          const cached = changes[cacheKey].newValue as any;
-          
-          if (cached.result && !cached.expiresAt) {
-            // Old format, just use result
-            clearError(); // Clear any stale errors
-            setAnalysisResult(cached);
-          } else if (cached.result && Date.now() < cached.expiresAt) {
-            // New format with expiration
-            clearError(); // Clear any stale errors
-            setAnalysisResult(cached.result);
-          }
-          
-          setIsFromCache(true);
-          if (isLoading) {
-            completeAnalysis();
-          }
-        }
-      } catch (error) {
-        console.error('Error handling storage change:', error);
+      // Debounce rapid storage changes to prevent race conditions
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
       }
+      
+      updateTimeout = setTimeout(async () => {
+        // Guard against concurrent updates
+        if (isUpdating) {
+          console.log('⏸️ Update already in progress, skipping storage change');
+          return;
+        }
+        
+        try {
+          setIsUpdating(true);
+          
+          const tab = await MessagingService.getActiveTab();
+          if (!tab?.url) return;
+          
+          const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+          if (!pageInfoResponse.success || !pageInfoResponse.data) return;
+          
+          const pageType = pageInfoResponse.data.pageType || 'other';
+          const cacheKey = `analysis_${new URL(tab.url).hostname.replace(/^www\./, '')}:${pageType}`;
+          
+          // Check if analysis completed in another tab
+          if (changes[cacheKey] && changes[cacheKey].newValue) {
+            console.log('📡 Analysis completed, updating UI...');
+            const cached = changes[cacheKey].newValue as any;
+            
+            if (cached.result && !cached.expiresAt) {
+              if (isValidAnalysisResult(cached)) {
+                setAnalysisResult(cached);
+                if (isLoading) completeAnalysis();
+              }
+            } else if (cached.result && Date.now() < cached.expiresAt) {
+              if (isValidAnalysisResult(cached.result)) {
+                setAnalysisResult(cached.result);
+                if (isLoading) completeAnalysis();
+              }
+            }
+            
+            setIsFromCache(true);
+            if (isLoading) {
+              completeAnalysis();
+            }
+            
+            console.log('✅ UI updated successfully');
+          }
+        } catch (error) {
+          console.error('Error handling storage change:', error);
+        } finally {
+          setIsUpdating(false);
+        }
+      }, 300); // 300ms debounce to batch rapid changes
     };
     
     chrome.storage.onChanged.addListener(handleStorageChange);
     
     return () => {
       chrome.storage.onChanged.removeListener(handleStorageChange);
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
+      }
     };
-  }, [isLoading]);
+  }, [isLoading, isUpdating]);
 
   const initializePopup = async () => {
     await testConnection();
@@ -186,29 +193,22 @@ function App() {
 
       const pageType = pageInfoResponse.data.pageType || 'other';
       const confidence = pageInfoResponse.data.pageTypeConfidence || 0;
-      const isInProgressFromContent = pageInfoResponse.data.isAnalysisInProgress || false;
       console.log(`📄 Detected page type: ${pageType} (confidence: ${confidence}%)`);
 
-      // Check if analysis is in progress using both storage and content script
-      const inProgressFromStorage = await StorageService.isAnalysisInProgress(tab.url, pageType);
-      const inProgress = inProgressFromStorage || isInProgressFromContent;
-      
-      console.log(`🔍 Initialization check: storage=${inProgressFromStorage}, content=${isInProgressFromContent}, combined=${inProgress}`);
-      
+      // Check if analysis is in progress for THIS specific page type
+      const inProgress = await StorageService.isAnalysisInProgress(tab.url, pageType);
       if (inProgress) {
         console.log(`⏳ Analysis in progress for ${pageType}, entering loading state`);
-        clearError(); // Clear any stale errors
         startAnalysis(tab.url);
-        // Don't return early - continue to check cache in case analysis just completed
+        return;
       }
 
       // Check cache only for this specific page type
       console.log(`🔍 Checking cache for: ${tab.url} (${pageType})`);
       const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
       
-      if (cached) {
+      if (cached && isValidAnalysisResult(cached)) {
         console.log(`✅ Cache hit for ${pageType}:`, cached);
-        clearError(); // Clear any errors when loading cached results
         setAnalysisResult(cached);
         setIsFromCache(true);
       } else {
@@ -220,84 +220,57 @@ function App() {
   };
 
   const handleAnalyze = async (force = false) => {
+    // Guard against concurrent analysis requests
+    if (isUpdating) {
+      console.log('⏸️ Update in progress, please wait');
+      return;
+    }
+    
     try {
+      setIsUpdating(true);
+      
       const tab = await MessagingService.getActiveTab();
       if (!tab?.url) {
         setError('No active tab found');
         return;
       }
 
-      // Clear any previous errors before starting
-      clearError();
-      
-      // If forcing refresh, clear cache and results
+      // If forcing refresh, clear cache first
       if (force) {
         await StorageService.clearCachedAnalysis(tab.url);
-        setAnalysisResult(null); // Only clear on force refresh
         setIsFromCache(false);
       }
-      
-      // Start analysis (keeps previous results visible during loading)
+
       startAnalysis(tab.url);
-      
-      console.log('🚀 Triggering analysis, polling will handle results...');
 
-      // Fire and forget with extended timeout for long-running analysis
-      // The polling mechanism will pick up the results when ready
-      MessagingService.sendToActiveTab<any, AnalysisResult>(
+      const response = await MessagingService.sendToActiveTab<any, AnalysisResult>(
         'ANALYZE_PAGE',
-        { url: tab.url, includeAI: useAI, forceRefresh: force },
-        { timeout: 60000 } // 60 second timeout for AI analysis
-      ).then((response) => {
-        console.log('📨 Analysis response received:', response);
-        
-        if (response.success && response.data) {
-          // Handle different response types
-          if (response.data.status === 'in_progress') {
-            console.log('⏳ Analysis already in progress, polling will handle it');
-            return;
-          }
-          
-          if (response.data.status === 'error') {
-            console.error('❌ Analysis error:', response.data.error);
-            setError(response.data.error || 'Analysis failed');
-            completeAnalysis();
-            return;
-          }
+        { url: tab.url, includeAI: useAI }
+      );
 
-          // Successful analysis result - update state
-          // (polling might also update it, but that's okay - they're the same data)
-          console.log('✅ Analysis complete via direct response');
-          clearError();
+      if (response.success && response.data) {
+        console.log('✅ Analysis complete, caching result for:', tab.url);
+        if (isValidAnalysisResult(response.data)) {
           setAnalysisResult(response.data);
           completeAnalysis();
-          setIsFromCache(false);
-        } else if (response.error) {
-          console.error('❌ Analysis failed:', response.error);
-          // Only complete analysis if it's a genuine failure, not a timeout
-          // Polling will handle timeout cases
-          if (!response.error.includes('timeout')) {
-            setError(response.error);
-            completeAnalysis();
-          } else {
-            console.warn('⚠️ Message timeout, polling will continue checking');
-          }
+        } else {
+          console.log('ℹ️ Non-final response received; waiting for cache/storage update');
         }
-      }).catch((error) => {
-        console.error('❌ Analysis request failed:', error);
-        // Don't call completeAnalysis() here! The analysis might still be running in the content script.
-        // If it's a timeout, polling will detect completion and update state.
-        // Only log the error - polling will handle state transitions.
-        console.warn('⚠️ Message failed, but polling will continue to check for results');
-      });
-
-      // Don't wait - return immediately and let polling handle the rest
-      console.log('✅ Analysis request sent, UI remains responsive');
-      
+        
+        // Cache the result with pageType from the analysis
+        const pageType = response.data.pageType || 'other';
+        if (isValidAnalysisResult(response.data)) {
+          const cached = await StorageService.cacheAnalysis(tab.url, pageType, response.data);
+          console.log('💾 Cache saved:', cached);
+        }
+        setIsFromCache(false);
+      } else {
+        setError(response.error || 'Analysis failed');
+      }
     } catch (error) {
-      console.error('❌ Failed to start analysis:', error);
-      setError(error instanceof Error ? error.message : 'Failed to start analysis');
-      completeAnalysis();
+      setError(error instanceof Error ? error.message : 'Analysis failed');
+    } finally {
+      setIsUpdating(false);
     }
   };
 
@@ -311,18 +284,11 @@ function App() {
           console.log('✅ Annotations cleared');
         }
       } else {
-        // Show annotations with real AI elements
-        const elements = analysisResult?.elements || [];
-        
-        if (elements.length === 0) {
-          setError('No dark patterns detected to highlight');
-          return;
-        }
-        
-        console.log(`🎨 Highlighting ${elements.length} elements from AI analysis`);
-        
+        // Show annotations with mock data (TG-07 will provide real data)
         const response = await MessagingService.sendToActiveTab('HIGHLIGHT_ELEMENTS', {
-          elements: elements,
+          // TODO [TG-07 Integration]: Replace with real AI elements
+          // Currently using mock data from annotator
+          elements: undefined, // Will use MOCK_ANNOTATIONS in content script
         });
         
         if (response.success) {
@@ -417,8 +383,7 @@ function App() {
           )}
 
           {!analysisResult && isLoading && (
-            <div className="flex-1 flex flex-col items-center justify-center p-6 space-y-6">
-              {/* Main Loading Animation */}
+            <div className="flex-1 flex items-center justify-center p-6">
               <div className="text-center space-y-6 animate-scaleIn">
                 <div className="relative">
                   <div className="w-32 h-32 mx-auto bg-gradient-to-br from-blue-100 to-purple-100 rounded-full flex items-center justify-center shadow-lg animate-pulse">
@@ -431,59 +396,21 @@ function App() {
                   <p className="text-sm text-gray-600 max-w-sm mx-auto">
                     {useAI ? (
                       <>
-                        🤖 Running comprehensive analysis
+                        🤖 Running AI-powered analysis
                         <br />
-                        <span className="text-xs text-gray-500">Heuristics + AI analysis in progress</span>
+                        <span className="text-xs text-gray-500">This may take 15-30 seconds</span>
                       </>
                     ) : (
-                      <>
-                        🔍 Running heuristic analysis
-                        <br />
-                        <span className="text-xs text-gray-500">Security, domain, and policy checks</span>
-                      </>
+                      'Running security and pattern checks...'
                     )}
                   </p>
                 </div>
-                
-                {/* Analysis Progress Steps */}
-                <div className="space-y-3 max-w-sm mx-auto">
-                  <div className="flex items-center gap-3 text-sm">
-                    <span className="w-5 h-5 bg-green-500 rounded-full flex items-center justify-center text-white text-xs">✓</span>
-                    <span className="text-gray-700">Page type detection</span>
-                  </div>
-                  <div className="flex items-center gap-3 text-sm">
-                    <span className="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center text-white text-xs animate-pulse">⚙</span>
-                    <span className="text-gray-700">Security & domain checks</span>
-                  </div>
-                  <div className="flex items-center gap-3 text-sm">
-                    <span className="w-5 h-5 bg-blue-500 rounded-full flex items-center justify-center text-white text-xs animate-pulse">⚙</span>
-                    <span className="text-gray-700">Content & policy analysis</span>
-                  </div>
-                  {useAI && (
-                    <div className="flex items-center gap-3 text-sm">
-                      <span className="w-5 h-5 bg-purple-500 rounded-full flex items-center justify-center text-white text-xs animate-pulse">🤖</span>
-                      <span className="text-gray-700">AI-powered pattern detection</span>
-                    </div>
-                  )}
-                  <div className="flex items-center gap-3 text-sm">
-                    <span className="w-5 h-5 bg-gray-300 rounded-full flex items-center justify-center text-white text-xs">⏳</span>
-                    <span className="text-gray-500">Risk scoring & aggregation</span>
-                  </div>
-                </div>
-                
                 <div className="flex items-center justify-center gap-2 text-xs text-gray-500">
                   <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-bounce"></span>
                   <span className="inline-block w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></span>
                   <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
                 </div>
               </div>
-
-              {/* Enhanced AI Progress Indicator */}
-              {useAI && (
-                <div className="w-full max-w-sm animate-fadeIn" style={{ animationDelay: '0.5s' }}>
-                  <AIProgressIndicator showDetails={true} />
-                </div>
-              )}
             </div>
           )}
 
@@ -513,9 +440,9 @@ function App() {
                   </button>
                   <button onClick={() => setActiveTab('reasons')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 relative ${activeTab === 'reasons' ? 'bg-white text-blue-600 shadow-md transform scale-105' : 'text-gray-600 hover:text-gray-900 hover:bg-white hover:bg-opacity-50'}`}>
                     Issues
-                    {analysisResult.allSignals.length > 0 && (
+                    {(analysisResult.allSignals?.length ?? 0) > 0 && (
                       <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold ${activeTab === 'reasons' ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-700'}`}>
-                        {analysisResult.allSignals.length}
+                        {analysisResult.allSignals?.length ?? 0}
                       </span>
                     )}
                   </button>
@@ -545,72 +472,27 @@ function App() {
                       <div className="bg-gradient-to-br from-blue-50 to-indigo-50 rounded-xl p-4 border border-blue-200 shadow-sm">
                         <div className="text-xs font-semibold text-blue-600 mb-1.5 uppercase tracking-wide">Security</div>
                         <div className="flex items-center gap-2">
-                          <span className="text-2xl">{analysisResult.security.isHttps ? '🔒' : '⚠️'}</span>
-                          <span className="font-bold text-gray-800">{analysisResult.security.isHttps ? 'HTTPS' : 'Not Secure'}</span>
-                        </div>
-                        <div className="text-xs text-gray-600 mt-1">
-                          {analysisResult.domain.ageInDays ? 
-                            `Domain age: ${Math.floor(analysisResult.domain.ageInDays / 365)}y` : 
-                            'Domain age: Unknown'
-                          }
+                          <span className="text-2xl">{(analysisResult.security?.isHttps ?? false) ? '🔒' : '⚠️'}</span>
+                          <span className="font-bold text-gray-800">{(analysisResult.security?.isHttps ?? false) ? 'HTTPS' : 'Not Secure'}</span>
                         </div>
                       </div>
                       <div className="bg-gradient-to-br from-purple-50 to-pink-50 rounded-xl p-4 border border-purple-200 shadow-sm">
                         <div className="text-xs font-semibold text-purple-600 mb-1.5 uppercase tracking-wide">Issues Found</div>
                         <div className="flex items-center gap-2">
-                          <span className="text-2xl">{analysisResult.allSignals.length === 0 ? '✅' : '🚨'}</span>
-                          <span className="font-bold text-gray-800">{analysisResult.allSignals.length} detected</span>
-                        </div>
-                        <div className="text-xs text-gray-600 mt-1">
-                          {analysisResult.aiEnabled ? 
-                            `${analysisResult.aiSignalsCount || 0} AI + ${analysisResult.allSignals.length - (analysisResult.aiSignalsCount || 0)} heuristic` :
-                            'Heuristic analysis only'
-                          }
+                          <span className="text-2xl">{(analysisResult.allSignals?.length ?? 0) === 0 ? '✅' : '🚨'}</span>
+                          <span className="font-bold text-gray-800">{analysisResult.allSignals?.length ?? 0} detected</span>
                         </div>
                       </div>
                     </div>
-                    
-                    {/* Enhanced Heuristic Analysis Breakdown */}
-                    <div className="bg-gradient-to-br from-gray-50 to-blue-50 rounded-xl p-4 border border-gray-200">
-                      <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
-                        <span className="text-lg">📊</span>Analysis Breakdown
-                      </h3>
-                      <div className="grid grid-cols-2 gap-3 text-xs">
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Security:</span>
-                          <span className={`font-semibold ${analysisResult.security.signals.length === 0 ? 'text-green-600' : 'text-red-600'}`}>
-                            {analysisResult.security.signals.length === 0 ? '✅ Secure' : `${analysisResult.security.signals.length} issues`}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Domain:</span>
-                          <span className={`font-semibold ${analysisResult.domain.signals.length === 0 ? 'text-green-600' : 'text-orange-600'}`}>
-                            {analysisResult.domain.signals.length === 0 ? '✅ Good' : `${analysisResult.domain.signals.length} issues`}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Contact:</span>
-                          <span className={`font-semibold ${analysisResult.contact.signals.length === 0 ? 'text-green-600' : 'text-yellow-600'}`}>
-                            {analysisResult.contact.signals.length === 0 ? '✅ Available' : `${analysisResult.contact.signals.length} missing`}
-                          </span>
-                        </div>
-                        <div className="flex justify-between">
-                          <span className="text-gray-600">Policies:</span>
-                          <span className={`font-semibold ${analysisResult.policies.signals.length === 0 ? 'text-green-600' : 'text-orange-600'}`}>
-                            {analysisResult.policies.signals.length === 0 ? '✅ Complete' : `${analysisResult.policies.signals.length} missing`}
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                    {analysisResult.allSignals.length > 0 && (
+                    {(analysisResult.allSignals?.length ?? 0) > 0 && (
                       <div>
                         <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
                           <span className="text-lg">⚠️</span>Top Issues
                         </h3>
-                        <ReasonsList signals={analysisResult.allSignals} maxItems={2} showCategory={true} compact={true} />
-                        {analysisResult.allSignals.length > 2 && (
+                        <ReasonsList signals={analysisResult.allSignals ?? []} maxItems={2} showCategory={true} compact={true} />
+                        {(analysisResult.allSignals?.length ?? 0) > 2 && (
                           <button onClick={() => setActiveTab('reasons')} className="w-full mt-3 py-2 px-4 bg-gradient-to-r from-orange-100 to-red-100 hover:from-orange-200 hover:to-red-200 border-2 border-orange-300 text-orange-900 font-semibold text-sm rounded-xl transition-all duration-200 shadow-sm hover:shadow">
-                            View All {analysisResult.allSignals.length} Issues →
+                            View All {analysisResult.allSignals?.length ?? 0} Issues →
                           </button>
                         )}
                       </div>
@@ -619,11 +501,22 @@ function App() {
                       <h3 className="text-sm font-bold text-gray-800 mb-3 flex items-center gap-2">
                         <span className="text-lg">📄</span>Policies
                       </h3>
-                      <PolicySummary policies={analysisResult.policies} compact={true} />
+                      <PolicySummary 
+                        policies={analysisResult.policies ?? {
+                          hasReturnPolicy: false,
+                          hasShippingPolicy: false,
+                          hasRefundPolicy: false,
+                          hasTermsOfService: false,
+                          hasPrivacyPolicy: false,
+                          policyUrls: {},
+                          signals: [],
+                        }} 
+                        compact={true} 
+                      />
                     </div>
                     
                     {/* TG-09: On-Page Annotations Toggle */}
-                    {analysisResult.allSignals.length > 0 && (
+                    {(analysisResult.allSignals?.length ?? 0) > 0 && (
                       <div className="bg-gradient-to-br from-orange-50 to-yellow-50 rounded-xl p-4 border-2 border-orange-300">
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
@@ -659,7 +552,7 @@ function App() {
                 )}
                 {activeTab === 'reasons' && (
                   <div className="pt-2 animate-fadeIn">
-                    <ReasonsList signals={analysisResult.allSignals} showCategory={true} compact={false} />
+                    <ReasonsList signals={analysisResult.allSignals ?? []} showCategory={true} compact={false} />
                   </div>
                 )}
                 {activeTab === 'policies' && (
