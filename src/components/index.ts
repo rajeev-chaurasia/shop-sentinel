@@ -1,3 +1,4 @@
-export { RiskMeter } from './RiskMeter';
-export { ReasonsList } from './ReasonsList';
+export { AIProgressIndicator } from './AIProgressIndicator';
 export { PolicySummary } from './PolicySummary';
+export { ReasonsList } from './ReasonsList';
+export { RiskMeter } from './RiskMeter';

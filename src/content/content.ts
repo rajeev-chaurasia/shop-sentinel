@@ -284,7 +284,7 @@ function detectPageType(): PageTypeResult {
 }
 
 async function handleAnalyzePage(payload: any) {
-  console.log('🔍 Starting page analysis...', payload);
+  console.log('🔍 ANALYZE_PAGE message received in content script:', payload);
   const startTime = performance.now();
   
   // Import storage service first
@@ -554,6 +554,37 @@ async function handleClearHighlights() {
   return result;
 }
 
+async function handleUpdateIcon(payload: { riskLevel: string; badgeText: string }) {
+  console.log('🎯 Content script received UPDATE_ICON:', payload);
+  
+  // Forward the message to the service worker
+  try {
+    await chrome.runtime.sendMessage({
+      action: 'UPDATE_ICON',
+      payload: payload,
+      sender: { tab: { id: await getCurrentTabId() } }
+    });
+    console.log('✅ UPDATE_ICON forwarded to service worker');
+  } catch (error) {
+    console.error('❌ Failed to forward UPDATE_ICON to service worker:', error);
+  }
+}
+
+async function getCurrentTabId(): Promise<number> {
+  return new Promise((resolve) => {
+    chrome.runtime.sendMessage({ action: 'GET_TAB_ID' }, (response) => {
+      if (response?.tabId) {
+        resolve(response.tabId);
+      } else {
+        // Fallback: query for current tab
+        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+          resolve(tabs[0]?.id || 0);
+        });
+      }
+    });
+  });
+}
+
 chrome.runtime.onMessage.addListener(
   createMessageHandler({
     PING: handlePing,
@@ -561,6 +592,7 @@ chrome.runtime.onMessage.addListener(
     ANALYZE_PAGE: handleAnalyzePage,
     HIGHLIGHT_ELEMENTS: handleHighlightElements,
     CLEAR_HIGHLIGHTS: handleClearHighlights,
+    UPDATE_ICON: handleUpdateIcon,
   })
 );
 
@@ -710,6 +742,17 @@ window.addEventListener('beforeunload', async () => {
 
 function initializeContentScript() {
   console.log('✅ Shop Sentinel initialized on:', window.location.href);
+  
+  // Set up message handlers
+  const messageHandler = createMessageHandler({
+    PING: handlePing,
+    GET_PAGE_INFO: handleGetPageInfo,
+    ANALYZE_PAGE: handleAnalyzePage,
+    HIGHLIGHT_ELEMENTS: handleHighlightElements,
+    CLEAR_HIGHLIGHTS: handleClearHighlights,
+  });
+  
+  chrome.runtime.onMessage.addListener(messageHandler);
   
   // Start URL change monitoring for SPAs
   startUrlChangeMonitoring();

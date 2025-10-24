@@ -10,7 +10,8 @@ export type MessageAction =
   | 'GET_TAB_STATE'
   | 'SET_TAB_STATE'
   | 'CLEAR_TAB_STATE'
-  | 'GET_ALL_TAB_STATES';
+  | 'GET_ALL_TAB_STATES'
+  | 'VALIDATE_SOCIAL_URLS';
 
 export interface BaseMessage {
   action: MessageAction;
@@ -51,6 +52,14 @@ export interface HighlightElementsPayload {
 export interface UpdateIconPayload {
   riskLevel: 'safe' | 'low' | 'medium' | 'high' | 'critical';
   badgeText?: string;
+}
+
+export interface ValidateSocialUrlsPayload {
+  urls: Array<{
+    platform: string;
+    url: string;
+    location: 'footer' | 'header' | 'body' | 'unknown';
+  }>;
 }
 
 export function createMessage<T = any>(
