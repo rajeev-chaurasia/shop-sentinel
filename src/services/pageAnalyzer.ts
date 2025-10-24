@@ -17,7 +17,7 @@ import { AIService } from './ai';
 import { RiskCalculator } from './riskCalculator';
 import { FingerprintService } from './fingerprint';
 import { StorageService } from './storage';
-import type { AnalysisResult, PageTypeResult } from '../types';
+import type { AnalysisResult, PageTypeResult, RiskSignal, AnnotationElement } from '../types';
 
 // Configuration constants
 const ANALYSIS_CONFIG = {
@@ -520,6 +520,9 @@ export class PageAnalyzer {
     // Calculate risk score using smart calculator
     const riskAnalysis = RiskCalculator.calculateScore(allSignals);
     
+    // Extract elements from AI dark pattern signals for highlighting using pattern matching
+    const elements = this.convertAISignalsToElements(allSignals);
+    
     // Build comprehensive analysis result
     const result: AnalysisResult = {
       url: data.url,
@@ -540,6 +543,7 @@ export class PageAnalyzer {
       isEcommerceSite: true,
       aiEnabled: !data.ai.error,
       aiSignalsCount: data.ai.signals.length,
+      elements, // Add elements for highlighting
     };
     
     return result;
@@ -549,11 +553,8 @@ export class PageAnalyzer {
    * Prepare page content for AI analysis with enhanced context
    */
   private preparePageContentForAI(pageType: PageTypeResult, _heuristics: any) {
-    return {
-      url: window.location.href,
-      title: document.title,
-      pageType: pageType.type,
-      confidence: pageType.confidence,
+    // Extract text content as before
+    const textContent = {
       headings: Array.from(document.querySelectorAll('h1, h2, h3, h4'))
         .map(el => el.textContent?.trim() || '')
         .filter(text => text.length > 0 && text.length < 200)
@@ -575,6 +576,97 @@ export class PageAnalyzer {
         .filter(text => text.length > 0)
         .slice(0, 8),
     };
+
+    // NEW: Extract HTML snippets with actual selectors for AI analysis
+    const htmlSnippets = this.extractRelevantHtmlSnippets(pageType);
+
+    return {
+      url: window.location.href,
+      title: document.title,
+      pageType: pageType.type,
+      confidence: pageType.confidence,
+      ...textContent,
+      htmlSnippets, // Add HTML snippets for accurate selector generation
+    };
+  }
+
+  /**
+   * Extract relevant HTML snippets with actual class names and IDs
+   * This gives AI real page structure to generate accurate CSS selectors
+   */
+  private extractRelevantHtmlSnippets(pageType: PageTypeResult) {
+    const snippets: { [key: string]: string[] } = {};
+
+    // Timer and countdown elements (for false urgency)
+    snippets.timerElements = Array.from(document.querySelectorAll('[class*="timer"], [class*="countdown"], [id*="timer"], [id*="countdown"]'))
+      .slice(0, 5)
+      .map(el => this.getElementSnippet(el));
+
+    // Scarcity and urgency elements
+    snippets.scarcityElements = Array.from(document.querySelectorAll('[class*="scarcity"], [class*="limited"], [class*="only"], [class*="left"], [class*="remaining"]'))
+      .slice(0, 5)
+      .map(el => this.getElementSnippet(el));
+
+    // Shipping and cost elements
+    snippets.shippingElements = Array.from(document.querySelectorAll('[class*="shipping"], [class*="delivery"], [class*="cost"], [class*="fee"]'))
+      .slice(0, 5)
+      .map(el => this.getElementSnippet(el));
+
+    // Popup and modal elements
+    snippets.popupElements = Array.from(document.querySelectorAll('[class*="popup"], [class*="modal"], [class*="overlay"], [id*="popup"], [id*="modal"]'))
+      .slice(0, 5)
+      .map(el => this.getElementSnippet(el));
+
+    // Subscription and continuity elements
+    snippets.subscriptionElements = Array.from(document.querySelectorAll('[class*="subscribe"], [class*="newsletter"], [class*="continu"], input[type="checkbox"][class*="subscribe"]'))
+      .slice(0, 5)
+      .map(el => this.getElementSnippet(el));
+
+    // Price and discount elements
+    snippets.priceElements = Array.from(document.querySelectorAll('[class*="price"], [class*="discount"], [class*="sale"], [class*="offer"]'))
+      .slice(0, 5)
+      .map(el => this.getElementSnippet(el));
+
+    // Review and rating elements
+    snippets.reviewElements = Array.from(document.querySelectorAll('[class*="review"], [class*="rating"], [class*="star"], [data-rating]'))
+      .slice(0, 5)
+      .map(el => this.getElementSnippet(el));
+
+    // Page-specific elements based on page type
+    if (pageType.type === 'checkout') {
+      snippets.checkoutElements = Array.from(document.querySelectorAll('[class*="checkout"], [class*="payment"], [class*="billing"], [class*="shipping"]'))
+        .slice(0, 8)
+        .map(el => this.getElementSnippet(el));
+    } else if (pageType.type === 'product') {
+      snippets.productElements = Array.from(document.querySelectorAll('[class*="product"], [data-product], [class*="item"], [class*="variant"]'))
+        .slice(0, 8)
+        .map(el => this.getElementSnippet(el));
+    }
+
+    return snippets;
+  }
+
+  /**
+   * Get a clean HTML snippet for an element with its selectors
+   */
+  private getElementSnippet(element: Element): string {
+    const tagName = element.tagName.toLowerCase();
+    const id = element.id ? ` id="${element.id}"` : '';
+    const classes = element.className ? ` class="${element.className}"` : '';
+    const text = element.textContent?.trim().slice(0, 100) || '';
+
+    // Get a few key attributes that might be relevant
+    const relevantAttrs: string[] = [];
+    for (const attr of element.attributes) {
+      if (['data-', 'aria-'].some(prefix => attr.name.startsWith(prefix)) ||
+          ['role', 'type', 'name', 'value', 'placeholder'].includes(attr.name)) {
+        relevantAttrs.push(`${attr.name}="${attr.value}"`);
+      }
+    }
+
+    const attrs = relevantAttrs.length > 0 ? ' ' + relevantAttrs.join(' ') : '';
+
+    return `<${tagName}${id}${classes}${attrs}>${text}</${tagName}>`;
   }
 
   /**
@@ -656,6 +748,296 @@ export class PageAnalyzer {
   }
 
   /**
+   * Convert AI dark pattern signals to AnnotationElement objects using pattern matching
+   */
+  private convertAISignalsToElements(signals: RiskSignal[]): AnnotationElement[] {
+    const aiDarkPatternSignals = signals.filter(
+      signal => signal.category === 'dark-pattern' && signal.source === 'ai' && signal.pattern
+    );
+
+    const elements: AnnotationElement[] = [];
+
+    aiDarkPatternSignals.forEach(signal => {
+      // Find actual elements on the page based on pattern type and metadata
+      const matchingElements = this.findElementsForPattern(signal);
+
+      matchingElements.forEach((element, index) => {
+        // Generate a unique selector for this element
+        const selector = this.generateSelectorForElement(element);
+        if (selector) {
+          elements.push({
+            pattern: signal.pattern!,
+            reason: signal.reason + (matchingElements.length > 1 ? ` (element ${index + 1})` : ''),
+            severity: signal.severity as 'low' | 'medium' | 'high' | 'critical',
+            textSnippet: signal.textSnippet,
+            elementType: signal.elementType,
+            context: signal.context,
+            selector: selector, // Add the generated selector
+          });
+        }
+      });
+    });
+
+    return elements;
+  }
+
+  /**
+   * Find DOM elements that match a specific dark pattern
+   */
+  private findElementsForPattern(signal: RiskSignal): Element[] {
+    const { pattern, textSnippet, elementType } = signal;
+
+    switch (pattern) {
+      case 'false_urgency':
+        return this.findFalseUrgencyElements(textSnippet, elementType);
+
+      case 'forced_continuity':
+        return this.findForcedContinuityElements(textSnippet, elementType);
+
+      case 'hidden_costs':
+        return this.findHiddenCostsElements(textSnippet, elementType);
+
+      case 'trick_questions':
+        return this.findTrickQuestionsElements(textSnippet, elementType);
+
+      case 'confirmshaming':
+        return this.findConfirmshamingElements(textSnippet, elementType);
+
+      case 'bait_switch':
+        return this.findBaitSwitchElements(textSnippet, elementType);
+
+      case 'social_proof_manipulation':
+        return this.findSocialProofElements(textSnippet, elementType);
+
+      default:
+        return [];
+    }
+  }
+
+  /**
+   * Find elements related to false urgency patterns
+   */
+  private findFalseUrgencyElements(_textSnippet?: string, _elementType?: string): Element[] {
+    const elements: Element[] = [];
+
+    // Look for countdown timers - these are more reliable indicators
+    const timerSelectors = [
+      '[class*="timer"]', '[class*="countdown"]', '[id*="timer"]', '[id*="countdown"]',
+      '[class*="clock"]', '[class*="time"]', 'time', '[data-countdown]',
+      '[class*="urgent"]', '[class*="limited-time"]'
+    ];
+
+    timerSelectors.forEach(selector => {
+      try {
+        const found = document.querySelectorAll(selector);
+        if (found.length > 0) {
+          console.log(`🕐 Found ${found.length} timer elements with selector: ${selector}`);
+          elements.push(...Array.from(found));
+        }
+      } catch (e) {
+        // Invalid selector, skip
+      }
+    });
+
+    // Look for scarcity text patterns, but be more specific
+    // Include more UI element types that might contain dark patterns
+    const uiSelectors = [
+      'button', 'a', '.btn', '[role="button"]', '.button',
+      '.badge', '.tag', '.label', '.notification',
+      '.alert', '.warning', '.urgent', '.scarcity',
+      '[class*="stock"]', '[class*="quantity"]', '[class*="remaining"]',
+      'span', 'div', 'p', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+      '[class*="price"]', '[class*="offer"]', '[class*="deal"]',
+      '[class*="timer"]', '[class*="countdown"]', '[class*="time"]',
+      '[class*="limited"]', '[class*="urgent"]', '[class*="flash"]'
+    ];
+
+    uiSelectors.forEach(selector => {
+      try {
+        const uiElements = document.querySelectorAll(selector);
+        uiElements.forEach(element => {
+          const text = element.textContent?.toLowerCase() || '';
+          // More permissive patterns that are likely dark patterns
+          const scarcityPatterns = [
+            /\bonly\s+\d+/i,  // "only 3", "Only 5"
+            /\bjust\s+\d+/i,  // "just 2", "Just 1"
+            /\d+\s+left/i,    // "3 left", "5 left"
+            /\d+\s+remaining/i, // "2 remaining"
+            /\blimited/i,     // "limited"
+            /\bselling\s+fast/i, // "selling fast"
+            /\balmost\s+sold/i, // "almost sold"
+            /\bhurry/i,       // "hurry"
+            /\bonly\s+few/i,  // "only few"
+            /\blast\s+chance/i, // "last chance"
+            /\bending\s+soon/i, // "ending soon"
+            /\b\d+\s+left/i,  // "3 left"
+            /\bstock/i,       // "stock"
+            /\bavailable/i    // "available"
+          ];
+
+          if (scarcityPatterns.some(pattern => pattern.test(text))) {
+            console.log(`🚨 Found scarcity element: "${text}" in ${selector}`);
+            elements.push(element);
+          }
+        });
+      } catch (e) {
+        // Invalid selector, skip
+      }
+    });
+
+    console.log(`⏰ False urgency elements found: ${[...new Set(elements)].length}`);
+    return [...new Set(elements)].slice(0, 5); // Limit to 5 elements per pattern
+  }
+
+  /**
+   * Find elements related to forced continuity patterns
+   */
+  private findForcedContinuityElements(_textSnippet?: string, _elementType?: string): Element[] {
+    const elements: Element[] = [];
+
+    // Look for subscription/auto-renewal related elements
+    const subscriptionSelectors = [
+      '[class*="subscribe"]', '[class*="renewal"]', '[class*="continu"]', '[class*="auto"]',
+      'input[type="checkbox"][class*="subscribe"]', '[class*="membership"]'
+    ];
+
+    subscriptionSelectors.forEach(selector => {
+      try {
+        const found = document.querySelectorAll(selector);
+        elements.push(...Array.from(found));
+      } catch (e) {
+        // Invalid selector, skip
+      }
+    });
+
+    return [...new Set(elements)].slice(0, 3); // Limit to 3 elements per pattern
+  }
+
+  /**
+   * Find elements related to hidden costs patterns
+   */
+  private findHiddenCostsElements(_textSnippet?: string, _elementType?: string): Element[] {
+    const elements: Element[] = [];
+
+    // Look for price/fee related elements
+    const costSelectors = [
+      '[class*="fee"]', '[class*="cost"]', '[class*="price"]', '[class*="charge"]',
+      '[class*="total"]', '[class*="tax"]', '[class*="shipping"]'
+    ];
+
+    costSelectors.forEach(selector => {
+      try {
+        const found = document.querySelectorAll(selector);
+        elements.push(...Array.from(found));
+      } catch (e) {
+        // Invalid selector, skip
+      }
+    });
+
+    return [...new Set(elements)].slice(0, 3); // Limit to 3 elements per pattern
+  }
+
+  /**
+   * Find elements related to trick questions patterns
+   */
+  private findTrickQuestionsElements(_textSnippet?: string, _elementType?: string): Element[] {
+    const elements: Element[] = [];
+
+    // Look for form inputs, especially checkboxes and radio buttons
+    const formSelectors = [
+      'input[type="checkbox"]', 'input[type="radio"]', 'select',
+      '[class*="opt"]', '[class*="choice"]', '[class*="question"]'
+    ];
+
+    formSelectors.forEach(selector => {
+      try {
+        const found = document.querySelectorAll(selector);
+        elements.push(...Array.from(found));
+      } catch (e) {
+        // Invalid selector, skip
+      }
+    });
+
+    return [...new Set(elements)].slice(0, 3); // Limit to 3 elements per pattern
+  }
+
+  /**
+   * Find elements related to confirmshaming patterns
+   */
+  private findConfirmshamingElements(_textSnippet?: string, _elementType?: string): Element[] {
+    const elements: Element[] = [];
+
+    // Look for buttons with negative/shaming text
+    const buttonSelectors = ['button', '[role="button"]', 'input[type="submit"]', 'input[type="button"]'];
+
+    buttonSelectors.forEach(selector => {
+      try {
+        const buttons = document.querySelectorAll(selector);
+        buttons.forEach(button => {
+          const text = button.textContent?.toLowerCase() || '';
+          // Look for shaming language
+          if (text.includes('no thanks') || text.includes('skip') || text.includes('decline') ||
+              text.includes('don\'t want') || text.includes('refuse')) {
+            elements.push(button);
+          }
+        });
+      } catch (e) {
+        // Invalid selector, skip
+      }
+    });
+
+    return [...new Set(elements)].slice(0, 3); // Limit to 3 elements per pattern
+  }
+
+  /**
+   * Find elements related to bait and switch patterns
+   */
+  private findBaitSwitchElements(_textSnippet?: string, _elementType?: string): Element[] {
+    const elements: Element[] = [];
+
+    // Look for price comparison elements
+    const priceSelectors = [
+      '[class*="price"]', '[class*="discount"]', '[class*="sale"]', '[class*="offer"]',
+      '[class*="original"]', '[class*="strikethrough"]'
+    ];
+
+    priceSelectors.forEach(selector => {
+      try {
+        const found = document.querySelectorAll(selector);
+        elements.push(...Array.from(found));
+      } catch (e) {
+        // Invalid selector, skip
+      }
+    });
+
+    return [...new Set(elements)].slice(0, 3); // Limit to 3 elements per pattern
+  }
+
+  /**
+   * Find elements related to social proof manipulation patterns
+   */
+  private findSocialProofElements(_textSnippet?: string, _elementType?: string): Element[] {
+    const elements: Element[] = [];
+
+    // Look for review/rating elements
+    const reviewSelectors = [
+      '[class*="review"]', '[class*="rating"]', '[class*="star"]', '[data-rating]',
+      '[class*="testimonial"]', '[class*="feedback"]'
+    ];
+
+    reviewSelectors.forEach(selector => {
+      try {
+        const found = document.querySelectorAll(selector);
+        elements.push(...Array.from(found));
+      } catch (e) {
+        // Invalid selector, skip
+      }
+    });
+
+    return [...new Set(elements)].slice(0, 3); // Limit to 3 elements per pattern
+  }
+
+  /**
    * Get cached analysis result if available
    */
   async getCachedAnalysis(url: string, pageType?: string): Promise<AnalysisResult | null> {
@@ -686,6 +1068,122 @@ export class PageAnalyzer {
     } catch (error) {
       console.error('❌ Failed to check analysis progress:', error);
       return false;
+    }
+  }
+
+  /**
+   * Generate a unique CSS selector for a DOM element
+   */
+  private generateSelectorForElement(element: Element): string | null {
+    try {
+      // Try to generate a unique selector using existing page structure
+      if (element.id) {
+        // Check if ID is unique
+        const idElements = document.querySelectorAll(`#${element.id}`);
+        if (idElements.length === 1) {
+          return `#${element.id}`;
+        }
+      }
+
+      // Try class-based selector with more specificity
+      if (element.className && typeof element.className === 'string') {
+        const classes = element.className.trim().split(/\s+/).filter(c => c && !c.startsWith('shop-sentinel'));
+        if (classes.length > 0) {
+          // Try with tag name for more specificity
+          const tagName = element.tagName.toLowerCase();
+          const classSelector = `${tagName}.${classes.join('.')}`;
+
+          const matches = document.querySelectorAll(classSelector);
+          if (matches.length === 1) {
+            return classSelector;
+          }
+
+          // Try just classes
+          const justClasses = `.${classes.join('.')}`;
+          const classMatches = document.querySelectorAll(justClasses);
+          if (classMatches.length === 1) {
+            return justClasses;
+          }
+        }
+      }
+
+      // Try tag name + text content (for buttons/links)
+      const tagName = element.tagName.toLowerCase();
+      const text = element.textContent?.trim();
+      if (text && text.length > 0 && text.length < 50) {
+        // Check if text is unique for this tag
+        const elementsWithSameText = Array.from(document.querySelectorAll(tagName))
+          .filter(el => el.textContent?.trim() === text);
+
+        if (elementsWithSameText.length === 1) {
+          // Create a more specific selector
+          const path = this.getElementPath(element);
+          if (path) {
+            return path;
+          }
+        }
+      }
+
+      // Try nth-child with parent context
+      const path = this.getElementPath(element);
+      if (path) {
+        return path;
+      }
+
+      // Last resort: add a stable data attribute that won't conflict
+      const uniqueId = `shop-sentinel-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+      element.setAttribute('data-shop-sentinel-target', uniqueId);
+      return `[data-shop-sentinel-target="${uniqueId}"]`;
+
+    } catch (error) {
+      console.warn('Failed to generate selector for element:', error);
+      return null;
+    }
+  }
+
+  /**
+   * Get a CSS path to an element using nth-child selectors
+   */
+  private getElementPath(element: Element): string | null {
+    try {
+      const parts: string[] = [];
+      let current: Element | null = element;
+
+      while (current && current.nodeType === Node.ELEMENT_NODE && parts.length < 5) {
+        let selector = current.tagName.toLowerCase();
+
+        if (current.id) {
+          selector = `#${current.id}`;
+          parts.unshift(selector);
+          break; // ID is unique, no need to go further
+        }
+
+        if (current.className && typeof current.className === 'string') {
+          const classes = current.className.trim().split(/\s+/).filter(c => c && !c.startsWith('shop-sentinel'));
+          if (classes.length > 0) {
+            selector += `.${classes[0]}`; // Just use first class
+          }
+        }
+
+        // Add nth-child if there are siblings
+        const siblings = Array.from(current.parentElement?.children || []);
+        if (siblings.length > 1) {
+          const index = siblings.indexOf(current) + 1;
+          selector += `:nth-child(${index})`;
+        }
+
+        parts.unshift(selector);
+        current = current.parentElement;
+
+        // Stop if we hit body
+        if (current?.tagName.toLowerCase() === 'body') {
+          break;
+        }
+      }
+
+      return parts.join(' > ');
+    } catch (error) {
+      return null;
     }
   }
 }

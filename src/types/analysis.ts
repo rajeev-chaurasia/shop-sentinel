@@ -8,6 +8,11 @@ export interface RiskSignal {
   category: 'security' | 'legitimacy' | 'dark-pattern' | 'policy';
   source: 'heuristic' | 'ai';
   details?: string;
+  // Pattern metadata for AI dark pattern signals
+  pattern?: 'false_urgency' | 'forced_continuity' | 'hidden_costs' | 'trick_questions' | 'confirmshaming' | 'bait_switch' | 'social_proof_manipulation' | 'other';
+  textSnippet?: string;
+  elementType?: 'button' | 'timer' | 'form' | 'text' | 'image' | 'other';
+  context?: string;
 }
 
 export interface SecurityAnalysis {
@@ -125,6 +130,7 @@ export interface AnalysisResult {
   isEcommerceSite: boolean;
   aiEnabled?: boolean;
   aiSignalsCount?: number;
+  elements?: AnnotationElement[]; // Elements to highlight for dark patterns
   status?: 'success' | 'error' | 'in_progress'; // Analysis status
   error?: string; // Error message if analysis failed
 }
@@ -160,4 +166,14 @@ export function getRiskColor(level: RiskSeverity): string {
     critical: '#ef4444',
   };
   return colors[level];
+}
+
+export interface AnnotationElement {
+  pattern: 'false_urgency' | 'forced_continuity' | 'hidden_costs' | 'trick_questions' | 'confirmshaming' | 'bait_switch' | 'social_proof_manipulation' | 'other';
+  reason: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  textSnippet?: string; // Text content that indicates the pattern
+  elementType?: 'button' | 'timer' | 'form' | 'text' | 'image' | 'other'; // Type of element to look for
+  context?: string; // Additional context about where to find the element
+  selector: string; // CSS selector to find the element for highlighting
 }

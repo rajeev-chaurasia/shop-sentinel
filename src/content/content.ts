@@ -1,6 +1,6 @@
 import { createMessageHandler } from '../services/messaging';
 import { pageAnalyzer } from '../services/pageAnalyzer';
-import { displayAnnotations, clearAnnotations, MOCK_ANNOTATIONS } from './annotator';
+import { displayAnnotations, clearAnnotations } from './annotator';
 
 console.log('🛡️ Shop Sentinel content script loaded on:', window.location.href);
 
@@ -70,11 +70,32 @@ async function handleAnalyzePage(payload: any) {
 async function handleHighlightElements(payload: any) {
   console.log('🎨 Highlighting elements...', payload);
   
-  // TODO [TG-07 Integration]: Replace with real AI elements when TG-07 is merged
-  // Currently using mock data for testing annotations
-  const elementsToHighlight = payload?.elements || MOCK_ANNOTATIONS;
+  // Use real elements from analysis result
+  const elementsToHighlight = payload?.elements || [];
   
-  const result = displayAnnotations(elementsToHighlight);
+  if (elementsToHighlight.length === 0) {
+    console.log('⚠️ No elements to highlight');
+    return { success: true, highlighted: 0 };
+  }
+  
+  // Validate selectors exist on the page
+  const validElements = elementsToHighlight.filter((element: any) => {
+    try {
+      const found = document.querySelector(element.selector);
+      if (!found) {
+        console.log(`⚠️ Selector not found: ${element.selector}`);
+        return false;
+      }
+      return true;
+    } catch (error) {
+      console.log(`⚠️ Invalid selector: ${element.selector}`, error);
+      return false;
+    }
+  });
+  
+  console.log(`✅ Highlighting ${validElements.length} of ${elementsToHighlight.length} elements`);
+  
+  const result = displayAnnotations(validElements);
   return result;
 }
 

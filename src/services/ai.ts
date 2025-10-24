@@ -293,6 +293,11 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
                     category: 'dark-pattern' as const,
                     source: 'ai' as const,
                     details: finding.details || finding.evidence || 'Detected by AI analysis',
+                    // Store pattern metadata for element finding
+                    pattern: finding.pattern,
+                    textSnippet: finding.textSnippet,
+                    elementType: finding.elementType,
+                    context: finding.context,
                 }));
         } catch (error) {
             console.error('❌ Error analyzing dark patterns:', error);
@@ -310,12 +315,16 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
         buttons: string[];
         forms: string[];
         pageType?: string;
+        htmlSnippets?: { [key: string]: string[] };
     }): string {
         const contextualInstructions = pageContent.pageType === 'checkout' 
             ? 'Focus on checkout-specific dark patterns: hidden fees, forced subscriptions, default opt-ins.'
             : pageContent.pageType === 'product'
             ? 'Focus on product page dark patterns: fake scarcity, misleading reviews, bait-and-switch.'
             : 'Analyze all common e-commerce dark patterns.';
+
+        // Build HTML context from snippets
+        const htmlContext = pageContent.htmlSnippets ? this.buildHtmlContext(pageContent.htmlSnippets) : '';
 
         return `You are an expert in identifying deceptive e-commerce practices. Analyze this ${pageContent.pageType || 'e-commerce'} page for dark patterns.
 
@@ -329,8 +338,12 @@ Headings: ${pageContent.headings.slice(0, 12).join(' | ')}
 Buttons: ${pageContent.buttons.slice(0, 20).join(' | ')}
 Forms: ${pageContent.forms.slice(0, 8).join(' | ')}
 
+${htmlContext}
+
 ANALYSIS INSTRUCTIONS:
 ${contextualInstructions}
+
+CRITICAL: For each dark pattern you identify, provide PATTERN METADATA instead of CSS selectors. The client-side code will find the actual elements.
 
 Look for these specific patterns:
 1. False Urgency: "Only 2 left!", fake countdown timers, "Limited time offer"
@@ -348,18 +361,49 @@ RESPONSE FORMAT - RETURN ONLY VALID JSON:
     "severity": "medium",
     "score": 15,
     "reason": "Fake scarcity claim without verification",
+    "textSnippet": "Only 2 left in stock!",
+    "elementType": "button",
+    "context": "Product availability indicator near add to cart button",
     "details": "Button text claims 'Only 2 left' but no inventory verification visible",
-    "evidence": "specific text or element found"
+    "evidence": "Found text 'Only 2 left in stock!' in page content"
   }
 ]
+
+PATTERN METADATA REQUIREMENTS:
+- pattern: One of the specific pattern types listed above
+- textSnippet: The exact text that indicates the dark pattern (if applicable)
+- elementType: Type of HTML element likely containing this pattern (button, timer, form, text, image, other)
+- context: Description of where this pattern typically appears on the page
+- Do NOT include CSS selectors - client code will find elements programmatically
 
 VALIDATION RULES:
 - severity: must be "low", "medium", or "high"
 - score: integer between 1-50
+- pattern: must be one of the predefined pattern types
 - Only include patterns you're confident about (>70% certainty)
 - If no patterns found, return: []
 
 Return JSON only, no markdown, no explanations.`;
+    }
+
+    /**
+     * Build HTML context from snippets for AI analysis
+     */
+    private static buildHtmlContext(htmlSnippets: { [key: string]: string[] }): string {
+        const sections: string[] = [];
+
+        for (const [category, snippets] of Object.entries(htmlSnippets)) {
+            if (snippets.length > 0) {
+                const categoryName = category.replace('Elements', '').toUpperCase();
+                const snippetList = snippets.map((snippet, i) => `${i + 1}. ${snippet}`).join('\n');
+                sections.push(`${categoryName} ELEMENTS:\n${snippetList}`);
+            }
+        }
+
+        if (sections.length > 0) {
+            return `PAGE HTML SNIPPETS:\n${sections.join('\n\n')}\n\n`;
+        }
+        return '';
     }
 
     /**
@@ -381,9 +425,10 @@ Return JSON only, no markdown, no explanations.`;
                 const hasRequiredFields = item.pattern || item.reason;
                 const hasValidSeverity = ['low', 'medium', 'high'].includes(item.severity);
                 const hasValidScore = typeof item.score === 'number' && item.score > 0 && item.score <= 50;
+                const hasValidPattern = ['false_urgency', 'forced_continuity', 'hidden_costs', 'trick_questions', 'confirmshaming', 'bait_switch', 'social_proof_manipulation', 'other'].includes(item.pattern);
 
-                if (!hasRequiredFields || !hasValidSeverity || !hasValidScore) {
-                    console.warn('⚠️ Filtering out invalid dark pattern finding:', item);
+                if (!hasRequiredFields || !hasValidSeverity || !hasValidScore || !hasValidPattern) {
+                    console.warn('⚠️ Filtering out invalid dark pattern finding (missing pattern type or invalid fields):', item);
                     return false;
                 }
 
@@ -406,7 +451,8 @@ Return JSON only, no markdown, no explanations.`;
             ['low', 'medium', 'high'].includes(finding.severity) &&
             typeof finding.score === 'number' &&
             finding.score > 0 &&
-            finding.score <= 50
+            finding.score <= 50 &&
+            ['false_urgency', 'forced_continuity', 'hidden_costs', 'trick_questions', 'confirmshaming', 'bait_switch', 'social_proof_manipulation', 'other'].includes(finding.pattern)
         );
     }
 

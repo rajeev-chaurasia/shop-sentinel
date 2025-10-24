@@ -311,11 +311,18 @@ function App() {
           console.log('✅ Annotations cleared');
         }
       } else {
-        // Show annotations with mock data (TG-07 will provide real data)
+        // Show annotations with real AI elements
+        const elements = analysisResult?.elements || [];
+        
+        if (elements.length === 0) {
+          setError('No dark patterns detected to highlight');
+          return;
+        }
+        
+        console.log(`🎨 Highlighting ${elements.length} elements from AI analysis`);
+        
         const response = await MessagingService.sendToActiveTab('HIGHLIGHT_ELEMENTS', {
-          // TODO [TG-07 Integration]: Replace with real AI elements
-          // Currently using mock data from annotator
-          elements: undefined, // Will use MOCK_ANNOTATIONS in content script
+          elements: elements,
         });
         
         if (response.success) {
