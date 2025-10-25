@@ -20,6 +20,7 @@ import {
   PolicyAnalysis,
   SocialMediaProfile 
 } from '../types/analysis';
+import { socialProofAuditService } from '../services/socialProofAudit';
 
 const SCORES = {
   NO_CONTACT_INFO: 15,
@@ -27,7 +28,7 @@ const SCORES = {
   NO_SOCIAL_MEDIA: 10,
 } as const;
 
-export function checkContactInfo(): ContactAnalysis {
+export async function checkContactInfo(): Promise<ContactAnalysis> {
   const signals: RiskSignal[] = [];
   const bodyText = document.body.innerText.toLowerCase();
   
@@ -111,6 +112,7 @@ export function checkContactInfo(): ContactAnalysis {
       });
     });
   });
+
   // Generate signals for missing contact information
   const missingInfo: string[] = [];
   if (!hasContactPage) missingInfo.push('contact page');
@@ -129,15 +131,33 @@ export function checkContactInfo(): ContactAnalysis {
       details: 'Legitimate businesses typically provide multiple ways to contact them. Missing contact information can indicate a scam.',
     });
   }
-  
-  // ⚠️ DON'T blindly penalize missing social media - let AI make context-aware decision
-  // Social media absence is only concerning for NEW sites with other red flags
-  // Established businesses (old domains, premium registrars) may not link social media on all pages
-  // The AI will receive social media data and make intelligent assessment based on full context
+
+  // Perform social proof audit (TG-11 implementation)
+  let enhancedProfiles = socialMediaProfiles;
+  let socialProofSignals: RiskSignal[] = [];
+  let socialProofAudit: ContactAnalysis['socialProofAudit'];
+
+  try {
+    const auditResult = await socialProofAuditService.auditSocialProof(socialMediaProfiles);
+    enhancedProfiles = auditResult.enhancedProfiles;
+    socialProofSignals = auditResult.signals;
+    socialProofAudit = auditResult.auditSummary;
+
+    console.log('📱 Social proof audit:', {
+      total: socialProofAudit.totalProfiles,
+      valid: socialProofAudit.validProfiles,
+      invalid: socialProofAudit.invalidProfiles,
+      rate: `${socialProofAudit.validationRate}%`,
+    });
+
+  } catch (error) {
+    console.warn('⚠️ Social proof audit failed, using basic detection:', error);
+    // Fallback: use basic social media detection without validation
+  }
   
   console.log('📱 Social media detection:', {
-    found: socialMediaProfiles.length,
-    platforms: socialMediaProfiles.map(p => `${p.platform} (${p.location})`),
+    found: enhancedProfiles.length,
+    platforms: enhancedProfiles.map(p => `${p.platform} (${p.location})${p.isValid !== undefined ? ` [${p.isValid ? 'valid' : 'invalid'}]` : ''}`),
     legacy_count: socialMediaLinks.length
   });
   
@@ -147,8 +167,9 @@ export function checkContactInfo(): ContactAnalysis {
     hasPhysicalAddress,
     hasEmail,
     socialMediaLinks,
-    socialMediaProfiles,
-    signals,
+    socialMediaProfiles: enhancedProfiles,
+    signals: [...signals, ...socialProofSignals],
+    socialProofAudit,
   };
 }
 

@@ -46,7 +46,7 @@ export function ReasonsList({
       border: 'border-orange-400',
       text: 'text-orange-900',
       badge: 'bg-orange-300 text-orange-900',
-      icon: '�',
+      icon: '⚠️',
     },
     high: {
       bg: 'bg-gradient-to-br from-red-50 via-red-100 to-red-200',

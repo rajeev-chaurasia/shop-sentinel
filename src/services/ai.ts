@@ -296,8 +296,11 @@ No markdown code blocks, no explanations, JSON only.`;
             // Parse AI response
             const findings = this.parseAIResponse(response);
 
-            // Convert to RiskSignal format
-            return findings.map((finding: any, index: number) => ({
+            // Sort by score (highest first) to prioritize major issues
+            const sortedFindings = findings.sort((a: any, b: any) => (b.score || 0) - (a.score || 0));
+
+            // Convert to RiskSignal format (limit to top 5)
+            return sortedFindings.slice(0, 5).map((finding: any, index: number) => ({
                 id: `ai-dark-${index + 1}`,
                 score: finding.score,
                 reason: finding.reason,
@@ -398,57 +401,31 @@ ${domainInfo}
 
 ⭐ CRITICAL CONTEXT-AWARE RULES:
 
-1. ESTABLISHED BUSINESSES (Domain age >5 years + 3+ protection flags):
-   - Missing social media links = LOW concern (they exist but may not be linked on all pages)
-   - These are proven legitimate businesses - focus on other signals
-   - Examples: Walmart, Amazon, Target are 20-30 year old domains
+Security: HTTPS=${pageData.hasHTTPS}, Contact=${pageData.hasContactInfo}, Policies=${pageData.hasPolicies}
+Domain: ${domainInfo}
+Social: ${socialInfo}
 
-2. NEW BUSINESSES (Domain age <180 days + 0-1 protection flags):
-   - Missing social media = MEDIUM-HIGH concern
-   - Combined with missing contact info = VERY suspicious
-   - New sites should be establishing social presence
+Context Rules:
+- Old domains (>5yr + 3+ flags): Missing social = LOW concern
+- New domains (<180d + <2 flags): Missing social = HIGH concern
+- Protection flags = trust indicator (0-1=low, 3-5=good, 6=max)
 
-3. PROTECTION FLAGS ARE KEY TRUST INDICATORS:
-   - 6 flags (clientDeleteProhibited, etc.) = Maximum security = Very legitimate
-   - 3-5 flags = Good security posture = Likely legitimate
-   - 0-1 flags = Minimal protection = Requires extra scrutiny
+Return JSON array (max 5 concerns, highest severity/score first):
+[{"concern":"name","severity":"low|medium|high","score":1-40,"reason":"why","details":"evidence"}]
 
-4. REGISTRAR REPUTATION:
-   - MarkMonitor, CSC, Brand Registry = Premium (used by Fortune 500)
-   - GoDaddy, Namecheap, Network Solutions = Standard but legitimate
-   - Privacy-protected registrars = Needs extra verification
-
-5. HOLISTIC ASSESSMENT:
-   - Don't focus on single missing element
-   - Weight domain age + protection flags heavily
-   - Recognizable brand names (in URL/title) are strong positive signals
-   - Consider if site NEEDS social media (B2B enterprise vs B2C retail)
-
-TASK: Identify legitimacy concerns based on the COMPLETE profile above.
-
-Return ONLY valid JSON array, no other text.
-Format:
-[
-  {
-    "concern": "issue name",
-    "severity": "low"|"medium"|"high",
-    "score": 1-50,
-    "reason": "description",
-    "details": "specific evidence"
-  }
-]
-
-If domain profile shows strong trust signals (old age + protection flags + contact info), return: []
-If domain is suspicious (new + no protection + missing info + no social), flag concerns.
-
-No markdown, no explanations, JSON only.`;
+If strong trust signals, return: []
+JSON only, no markdown.`;
 
             const response = await this.session.prompt(prompt);
             console.log('🤖 AI Legitimacy Analysis:', response);
 
             const concerns = this.parseAIResponse(response);
 
-            return concerns.map((concern: any, index: number) => ({
+            // Sort by score (highest first) to prioritize major issues
+            const sortedConcerns = concerns.sort((a: any, b: any) => (b.score || 0) - (a.score || 0));
+
+            // Limit to top 5 concerns to prevent token overflow
+            return sortedConcerns.slice(0, 5).map((concern: any, index: number) => ({
                 id: `ai-legit-${index + 1}`,
                 score: concern.score,
                 reason: concern.reason,
@@ -488,6 +465,53 @@ No markdown, no explanations, JSON only.`;
                     extracted = extracted.replace(/,(\s*[}\]])/g, '$1');
                     // Fix unquoted keys (basic attempt)
                     extracted = extracted.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
+                    
+                    // Handle truncated JSON - try to close incomplete objects/arrays
+                    if (extracted.includes('{') && !extracted.endsWith('}') && !extracted.endsWith(']')) {
+                        // Check if we're inside an incomplete string (odd number of quotes after last colon)
+                        const lastColonIndex = extracted.lastIndexOf(':');
+                        const afterLastColon = extracted.substring(lastColonIndex);
+                        const quotesAfterColon = (afterLastColon.match(/"/g) || []).length;
+                        
+                        // If odd number of quotes, we're inside an incomplete string - close it
+                        if (quotesAfterColon % 2 !== 0) {
+                            extracted += '"';
+                        }
+                        
+                        // Remove any trailing incomplete content after last complete object
+                        // Look for last complete property (ends with " or } or ])
+                        const lastCompleteMatch = extracted.match(/["\}\]]\s*$/);
+                        if (!lastCompleteMatch) {
+                            // Find the last comma, closing brace, or opening brace before truncation
+                            const lastSafeIndex = Math.max(
+                                extracted.lastIndexOf('",'),
+                                extracted.lastIndexOf('},'),
+                                extracted.lastIndexOf('"}'),
+                                extracted.lastIndexOf(']')
+                            );
+                            
+                            if (lastSafeIndex > 0) {
+                                // Truncate to last safe point
+                                extracted = extracted.substring(0, lastSafeIndex + 1);
+                            }
+                        }
+                        
+                        // Count open vs closed braces
+                        const openBraces = (extracted.match(/\{/g) || []).length;
+                        const closeBraces = (extracted.match(/\}/g) || []).length;
+                        const openBrackets = (extracted.match(/\[/g) || []).length;
+                        const closeBrackets = (extracted.match(/\]/g) || []).length;
+                        
+                        // Try to close missing braces/brackets
+                        for (let i = 0; i < (openBraces - closeBraces); i++) {
+                            extracted += '}';
+                        }
+                        for (let i = 0; i < (openBrackets - closeBrackets); i++) {
+                            extracted += ']';
+                        }
+                        
+                        console.warn('⚠️ Attempted to fix truncated JSON response');
+                    }
 
                     return JSON.parse(extracted);
                 }
@@ -500,6 +524,7 @@ No markdown, no explanations, JSON only.`;
         } catch (error) {
             console.error('❌ Error parsing AI response:', error);
             console.error('Response that failed:', response.slice(0, 500));
+            // Return empty array instead of throwing - graceful degradation
             return [];
         }
     }

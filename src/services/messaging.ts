@@ -194,20 +194,35 @@ export function createMessageHandler(
       return false;
     }
 
-    const result = handler(typedMessage.payload, sender);
+    try {
+      const result = handler(typedMessage.payload, sender);
 
-    if (result instanceof Promise) {
-      result
-        .then((data) => {
-          sendResponse(createSuccessResponse(data));
-        })
-        .catch((error) => {
-          sendResponse(createErrorResponse(error.message || 'Handler error'));
-        });
-      return true;
+      if (result instanceof Promise) {
+        result
+          .then((data) => {
+            try {
+              sendResponse(createSuccessResponse(data));
+            } catch (responseError) {
+              console.error('❌ Error sending success response:', responseError);
+            }
+          })
+          .catch((error) => {
+            try {
+              console.error('❌ Handler error:', error);
+              sendResponse(createErrorResponse(error.message || 'Handler error'));
+            } catch (responseError) {
+              console.error('❌ Error sending error response:', responseError);
+            }
+          });
+        return true; // Keep channel open for async response
+      }
+
+      sendResponse(createSuccessResponse(result));
+      return false;
+    } catch (error: any) {
+      console.error('❌ Synchronous handler error:', error);
+      sendResponse(createErrorResponse(error.message || 'Handler execution error'));
+      return false;
     }
-
-    sendResponse(createSuccessResponse(result));
-    return false;
   };
 }

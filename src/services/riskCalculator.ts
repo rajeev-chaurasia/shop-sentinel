@@ -101,26 +101,94 @@ export class RiskCalculator {
   }
 
   /**
-   * Remove duplicate signals (same concern from AI + Heuristic)
+   * Remove duplicate signals with enhanced AI/heuristic integration
    */
   private static deduplicateSignals(signals: RiskSignal[]): RiskSignal[] {
     const seen = new Map<string, RiskSignal>();
+    const duplicateGroups = new Map<string, RiskSignal[]>();
     
+    // First pass: group potential duplicates
     for (const signal of signals) {
       const key = this.getConcernKey(signal);
       
-      if (!seen.has(key)) {
-        seen.set(key, signal);
+      if (!duplicateGroups.has(key)) {
+        duplicateGroups.set(key, []);
+      }
+      duplicateGroups.get(key)!.push(signal);
+    }
+    
+    // Second pass: resolve duplicates intelligently
+    for (const [key, duplicates] of duplicateGroups) {
+      if (duplicates.length === 1) {
+        seen.set(key, duplicates[0]);
       } else {
-        // Keep the signal with higher score (usually AI has better context)
-        const existing = seen.get(key)!;
-        if (signal.score > existing.score) {
-          seen.set(key, signal);
-        }
+        // Multiple signals for same concern - merge intelligently
+        const resolved = this.resolveDuplicateSignals(duplicates);
+        seen.set(key, resolved);
       }
     }
     
     return Array.from(seen.values());
+  }
+
+  /**
+   * Intelligently resolve duplicate signals from AI + Heuristic sources
+   */
+  private static resolveDuplicateSignals(duplicates: RiskSignal[]): RiskSignal {
+    // Separate by source
+    const aiSignals = duplicates.filter(s => s.source === 'ai');
+    const heuristicSignals = duplicates.filter(s => s.source === 'heuristic');
+    
+    // If we have both AI and heuristic signals for same issue
+    if (aiSignals.length > 0 && heuristicSignals.length > 0) {
+      const aiSignal = aiSignals[0];
+      const heuristicSignal = heuristicSignals[0];
+      
+      // Create hybrid signal combining best of both
+      return {
+        id: `hybrid-${aiSignal.id}`,
+        score: Math.max(aiSignal.score, heuristicSignal.score), // Take higher score
+        reason: aiSignal.reason.length > heuristicSignal.reason.length 
+          ? aiSignal.reason 
+          : heuristicSignal.reason, // Take more detailed reason
+        severity: this.getHigherSeverity(aiSignal.severity, heuristicSignal.severity),
+        category: aiSignal.category,
+        source: 'ai' as const, // AI source for hybrid signals
+        details: this.combineDetails(aiSignal.details, heuristicSignal.details),
+      };
+    }
+    
+    // If only one source, take the highest scoring signal
+    return duplicates.reduce((best, current) => 
+      current.score > best.score ? current : best
+    );
+  }
+
+  /**
+   * Get the higher severity between two severities
+   */
+  private static getHigherSeverity(
+    sev1: RiskSignal['severity'], 
+    sev2: RiskSignal['severity']
+  ): RiskSignal['severity'] {
+    const severityOrder = { safe: 0, low: 1, medium: 2, high: 3, critical: 4 };
+    return severityOrder[sev1] > severityOrder[sev2] ? sev1 : sev2;
+  }
+
+  /**
+   * Combine details from multiple sources
+   */
+  private static combineDetails(detail1?: string, detail2?: string): string {
+    if (!detail1 && !detail2) return '';
+    if (!detail1) return detail2!;
+    if (!detail2) return detail1;
+    
+    // Avoid redundant details
+    if (detail1.includes(detail2) || detail2.includes(detail1)) {
+      return detail1.length > detail2.length ? detail1 : detail2;
+    }
+    
+    return `${detail1} | ${detail2}`;
   }
 
   /**

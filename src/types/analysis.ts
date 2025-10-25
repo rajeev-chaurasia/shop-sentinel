@@ -8,6 +8,11 @@ export interface RiskSignal {
   category: 'security' | 'legitimacy' | 'dark-pattern' | 'policy';
   source: 'heuristic' | 'ai';
   details?: string;
+  // Pattern metadata for AI dark pattern signals
+  pattern?: 'false_urgency' | 'forced_continuity' | 'hidden_costs' | 'trick_questions' | 'confirmshaming' | 'bait_switch' | 'social_proof_manipulation' | 'other';
+  textSnippet?: string;
+  elementType?: 'button' | 'timer' | 'form' | 'text' | 'image' | 'other';
+  context?: string;
 }
 
 export interface SecurityAnalysis {
@@ -38,6 +43,9 @@ export interface SocialMediaProfile {
   platform: string;
   url: string;
   location: 'footer' | 'header' | 'body' | 'unknown';
+  isValid?: boolean; // Whether the URL was validated as accessible
+  validationError?: string; // Error message if validation failed
+  validatedAt?: number; // Timestamp of validation
 }
 
 export interface ContactAnalysis {
@@ -46,8 +54,15 @@ export interface ContactAnalysis {
   hasPhysicalAddress: boolean;
   hasEmail: boolean;
   socialMediaLinks: string[]; // Kept for backward compatibility
-  socialMediaProfiles: SocialMediaProfile[]; // Enhanced structured data
+  socialMediaProfiles: SocialMediaProfile[]; // Enhanced structured data with validation
   signals: RiskSignal[];
+  socialProofAudit?: {
+    totalProfiles: number;
+    validProfiles: number;
+    invalidProfiles: number;
+    validationRate: number; // Percentage of valid profiles
+    lastValidatedAt: number;
+  };
 }
 
 export interface PolicyAnalysis {
@@ -89,10 +104,17 @@ export interface AIAnalysis {
   rawResponse?: any;
 }
 
+export interface PageTypeResult {
+  type: 'home' | 'product' | 'category' | 'checkout' | 'cart' | 'policy' | 'other';
+  confidence: number; // 0-100
+  signals: string[]; // What made us decide this
+}
+
 export interface AnalysisResult {
   url: string;
   timestamp: number;
-  pageType?: string; // Page type detected (home, product, checkout, etc.)
+  pageType: string; // Page type detected (home, product, checkout, etc.)
+  pageTypeConfidence?: number; // Confidence in page type detection
   security: SecurityAnalysis;
   domain: DomainAnalysis;
   contact: ContactAnalysis;
@@ -102,10 +124,15 @@ export interface AnalysisResult {
   totalRiskScore: number;
   riskLevel: RiskSeverity;
   allSignals: RiskSignal[];
+  riskBreakdown?: any; // Risk breakdown by category
+  topConcerns?: RiskSignal[]; // Top risk signals
   analysisVersion: string;
   isEcommerceSite: boolean;
   aiEnabled?: boolean;
   aiSignalsCount?: number;
+  elements?: AnnotationElement[]; // Elements to highlight for dark patterns
+  status?: 'success' | 'error' | 'in_progress'; // Analysis status
+  error?: string; // Error message if analysis failed
 }
 
 export interface PolicySummary {
@@ -139,4 +166,14 @@ export function getRiskColor(level: RiskSeverity): string {
     critical: '#ef4444',
   };
   return colors[level];
+}
+
+export interface AnnotationElement {
+  pattern: 'false_urgency' | 'forced_continuity' | 'hidden_costs' | 'trick_questions' | 'confirmshaming' | 'bait_switch' | 'social_proof_manipulation' | 'other';
+  reason: string;
+  severity: 'low' | 'medium' | 'high' | 'critical';
+  textSnippet?: string; // Text content that indicates the pattern
+  elementType?: 'button' | 'timer' | 'form' | 'text' | 'image' | 'other'; // Type of element to look for
+  context?: string; // Additional context about where to find the element
+  selector: string; // CSS selector to find the element for highlighting
 }

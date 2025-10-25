@@ -46,8 +46,11 @@ export function contentScriptPlugin() {
         });
 
         console.log('✅ Content script built');
+        
+        // Note: Service worker is built by main vite config
+        console.log('✅ Service worker already built by main config');
       } catch (error) {
-        console.error('❌ Content script build failed:', error);
+        console.error('❌ Build failed:', error);
         throw error;
       }
     },

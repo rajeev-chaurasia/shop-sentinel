@@ -24,6 +24,13 @@ const CACHE_DURATION_MS = 15 * 60 * 1000;      // 15 minutes
 const PROGRESS_TIMEOUT_MS = 60 * 1000;         // 60 seconds
 const LOCK_TIMEOUT_MS = 90 * 1000;             // 90 seconds (longer than analysis typically takes)
 
+/**
+ * Check if the extension context is valid and Chrome APIs are available
+ */
+function isExtensionContextValid(): boolean {
+  return !!(chrome?.storage?.local && typeof chrome.storage.local.get === 'function');
+}
+
 export const StorageService = {
   /**
    * Get the most recent cached analysis for a domain irrespective of path
@@ -67,6 +74,11 @@ export const StorageService = {
       const result = await chrome.storage.local.get(key);
       return result[key] ?? null;
     } catch (error) {
+      // Handle extension context invalidation specifically
+      if (error instanceof Error && error.message.includes('Extension context invalidated')) {
+        console.error('❌ Extension context invalidated - extension may have been reloaded');
+        return null;
+      }
       console.error('Error getting from storage:', error);
       return null;
     }
@@ -84,6 +96,11 @@ export const StorageService = {
       await chrome.storage.local.set({ [key]: value });
       return true;
     } catch (error) {
+      // Handle extension context invalidation specifically
+      if (error instanceof Error && error.message.includes('Extension context invalidated')) {
+        console.error('❌ Extension context invalidated - extension may have been reloaded');
+        return false;
+      }
       console.error('Error setting in storage:', error);
       return false;
     }
@@ -101,6 +118,11 @@ export const StorageService = {
       await chrome.storage.local.remove(key);
       return true;
     } catch (error) {
+      // Handle extension context invalidation specifically
+      if (error instanceof Error && error.message.includes('Extension context invalidated')) {
+        console.error('❌ Extension context invalidated - extension may have been reloaded');
+        return false;
+      }
       console.error('Error removing from storage:', error);
       return false;
     }
@@ -118,6 +140,11 @@ export const StorageService = {
       await chrome.storage.local.clear();
       return true;
     } catch (error) {
+      // Handle extension context invalidation specifically
+      if (error instanceof Error && error.message.includes('Extension context invalidated')) {
+        console.error('❌ Extension context invalidated - extension may have been reloaded');
+        return false;
+      }
       console.error('Error clearing storage:', error);
       return false;
     }
