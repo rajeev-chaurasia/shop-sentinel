@@ -1,10 +1,6 @@
 // Storage service for managing Chrome storage API
 import type { AnalysisResult } from '../types';
-
-interface CachedAnalysis {
-  result: AnalysisResult;
-  expiresAt: number;
-}
+import { cacheService } from './cache';
 
 interface AnalysisProgress {
   url: string;
@@ -20,7 +16,6 @@ interface AnalysisLock {
   pageType: string;
 }
 
-const CACHE_DURATION_MS = 15 * 60 * 1000;      // 15 minutes
 const PROGRESS_TIMEOUT_MS = 60 * 1000;         // 60 seconds
 const LOCK_TIMEOUT_MS = 90 * 1000;             // 90 seconds (longer than analysis typically takes)
 
@@ -147,45 +142,14 @@ export const StorageService = {
    * Cache an analysis result using domain + page type
    */
   async cacheAnalysis(url: string, pageType: string, result: AnalysisResult): Promise<boolean> {
-    const cacheKey = this.generateCacheKey(url, pageType);
-    const cached: CachedAnalysis = {
-      result,
-      expiresAt: Date.now() + CACHE_DURATION_MS,
-    };
-    
-    console.log(`💾 Caching: ${cacheKey}`);
-    const ok = await this.set(cacheKey, cached);
-    if (ok) {
-      try {
-        const parsed = new URL(url);
-        const domain = parsed.hostname.replace(/^www\./, '');
-        await chrome.storage.local.set({ [`latest_${domain}:${pageType}`]: cached });
-      } catch {}
-    }
-    return ok;
+    return await cacheService.set(url, pageType, result);
   },
 
   /**
    * Get cached analysis using domain + page type
    */
   async getCachedAnalysis(url: string, pageType: string): Promise<AnalysisResult | null> {
-    const cacheKey = this.generateCacheKey(url, pageType);
-    const cached = await this.get<CachedAnalysis>(cacheKey);
-    
-    if (!cached) {
-      console.log(`📭 No cache found for ${cacheKey}`);
-      return null;
-    }
-    
-    // Check if expired
-    if (Date.now() > cached.expiresAt) {
-      console.log(`⏰ Cache expired for ${cacheKey}, removing...`);
-      await this.remove(cacheKey);
-      return null;
-    }
-    
-    console.log(`✅ Cache hit: ${cacheKey}`);
-    return cached.result;
+    return await cacheService.get(url, pageType);
   },
 
   /**
@@ -214,35 +178,7 @@ export const StorageService = {
    * If pageType not provided, clears all page type caches for the URL
    */
   async clearCachedAnalysis(url: string, pageType?: string): Promise<boolean> {
-    try {
-      const parsed = new URL(url);
-      const domain = parsed.hostname.replace(/^www\./, '');
-      const path = parsed.pathname.replace(/\/+$/, '');
-      
-      if (pageType) {
-        // Clear specific page type cache
-        // Remove both path-scoped and domain-scoped variants
-        const keys = [
-          `analysis_${domain}:${pageType}`,
-          `analysis_${domain}:${pageType}:${path || '/'}`,
-        ];
-        await chrome.storage.local.remove(keys);
-        console.log(`🧹 Cleared cache keys:`, keys);
-        return true;
-      } else {
-        // Clear all page types for this URL
-        const all = await chrome.storage.local.get(null);
-        const keys = Object.keys(all).filter(k => k.startsWith(`analysis_${domain}:`));
-        if (keys.length) {
-          await chrome.storage.local.remove(keys);
-        }
-        console.log(`🧹 Cleared all caches for domain ${domain}`);
-        return true;
-      }
-    } catch (error) {
-      console.error('Error clearing cache:', error);
-      return false;
-    }
+    return await cacheService.clear(url, pageType);
   },
 
   /**

@@ -1,14 +1,16 @@
 import { create } from 'zustand';
 import { AnalysisResult, PolicySummary } from '../types';
+import { AppError } from '../types/errors';
 
 interface AnalysisState {
   currentUrl: string | null;
   analysisResult: AnalysisResult | null;
+  partialResult: AnalysisResult | null; // Progressive loading support
   policySummaries: Record<string, PolicySummary>;
   isLoading: boolean;
   isAnalyzing: boolean;
   isSummarizingPolicy: boolean;
-  error: string | null;
+  error: AppError | null;
   lastAnalyzedAt: number | null;
   analysisProgress: number;
   
@@ -29,12 +31,13 @@ interface AnalysisState {
 interface AnalysisActions {
   startAnalysis: (url: string) => void;
   setAnalysisResult: (result: AnalysisResult | null) => void;
+  setPartialResult: (result: AnalysisResult | null) => void; // Progressive loading
   updateAnalysisProgress: (progress: number) => void;
   completeAnalysis: () => void;
   startPolicySummary: () => void;
   setPolicySummary: (policyType: string, summary: PolicySummary) => void;
   completePolicySummary: () => void;
-  setError: (error: string) => void;
+  setError: (error: AppError | null) => void;
   clearError: () => void;
   setLoading: (isLoading: boolean) => void;
   reset: () => void;
@@ -70,6 +73,7 @@ const initialAIState = {
 const initialState: AnalysisState = {
   currentUrl: null,
   analysisResult: null,
+  partialResult: null,
   policySummaries: {},
   isLoading: false,
   isAnalyzing: false,
@@ -90,6 +94,7 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
       isLoading: true,
       error: null,
       analysisProgress: 0,
+      partialResult: null, // Clear partial results for new analysis
       // Don't clear analysisResult - keep showing previous results during loading
       // This prevents UI "reset" when reopening popup during analysis
     });
@@ -100,6 +105,13 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
       analysisResult: result,
       lastAnalyzedAt: result ? Date.now() : null,
       analysisProgress: result ? 100 : 0,
+    });
+  },
+  
+  setPartialResult: (result: AnalysisResult | null) => {
+    set({
+      partialResult: result,
+      analysisProgress: result ? Math.min(90, 30 + (result.aiEnabled ? 40 : 0)) : 0, // Show progress based on completion
     });
   },
   
@@ -140,7 +152,7 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
     });
   },
   
-  setError: (error: string) => {
+  setError: (error: AppError | null) => {
     set({
       error,
       isLoading: false,
