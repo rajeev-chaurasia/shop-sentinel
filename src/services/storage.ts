@@ -26,6 +26,36 @@ const LOCK_TIMEOUT_MS = 90 * 1000;             // 90 seconds (longer than analys
 
 export const StorageService = {
   /**
+   * Get the most recent cached analysis for a domain irrespective of path
+   * Used for delta analysis to reuse domain/contact/security
+   */
+  async getLatestDomainAnalysis(url: string, pageType?: string): Promise<AnalysisResult | null> {
+    try {
+      const parsed = new URL(url);
+      const domain = parsed.hostname.replace(/^www\./, '');
+      const all = await chrome.storage.local.get(null);
+      const prefix = `analysis_${domain}:`;
+      const candidates = Object.entries(all)
+        .filter(([k]) => k.startsWith(prefix) && (!pageType || k.includes(`:${pageType}`)))
+        .map(([, v]) => v as any)
+        .filter(Boolean);
+      const latestKey = `latest_${domain}:${pageType || ''}`;
+      if (all[latestKey]) candidates.push(all[latestKey]);
+      if (candidates.length === 0) return null;
+      // New format: { result, expiresAt }
+      const valid = candidates
+        .map(c => (c.result && c.expiresAt ? c.result as AnalysisResult : (c as AnalysisResult)))
+        .filter(r => !!r && typeof r === 'object');
+      if (valid.length === 0) return null;
+      // Pick latest timestamp
+      valid.sort((a, b) => (b.timestamp || 0) - (a.timestamp || 0));
+      return valid[0];
+    } catch (e) {
+      console.error('getLatestDomainAnalysis error:', e);
+      return null;
+    }
+  },
+  /**
    * Get a value from Chrome storage
    */
   async get<T>(key: string): Promise<T | null> {
@@ -104,7 +134,15 @@ export const StorageService = {
     };
     
     console.log(`💾 Caching: ${cacheKey}`);
-    return this.set(cacheKey, cached);
+    const ok = await this.set(cacheKey, cached);
+    if (ok) {
+      try {
+        const parsed = new URL(url);
+        const domain = parsed.hostname.replace(/^www\./, '');
+        await chrome.storage.local.set({ [`latest_${domain}:${pageType}`]: cached });
+      } catch {}
+    }
+    return ok;
   },
 
   /**
@@ -138,6 +176,12 @@ export const StorageService = {
     try {
       const parsed = new URL(url);
       const domain = parsed.hostname.replace(/^www\./, ''); // Remove www.
+      // For product-like pages, include path to avoid reusing cache across different items
+      const path = parsed.pathname.replace(/\/+$/, '');
+      const pathScopedTypes = new Set(['product', 'policy', 'checkout', 'cart']);
+      if (pathScopedTypes.has(pageType)) {
+        return `analysis_${domain}:${pageType}:${path || '/'}`;
+      }
       return `analysis_${domain}:${pageType}`;
     } catch {
       // Fallback if URL parsing fails
@@ -153,20 +197,26 @@ export const StorageService = {
     try {
       const parsed = new URL(url);
       const domain = parsed.hostname.replace(/^www\./, '');
+      const path = parsed.pathname.replace(/\/+$/, '');
       
       if (pageType) {
         // Clear specific page type cache
-        const cacheKey = this.generateCacheKey(url, pageType);
-        console.log(`🧹 Clearing cache for ${url} (${pageType})`);
-        return this.remove(cacheKey);
+        // Remove both path-scoped and domain-scoped variants
+        const keys = [
+          `analysis_${domain}:${pageType}`,
+          `analysis_${domain}:${pageType}:${path || '/'}`,
+        ];
+        await chrome.storage.local.remove(keys);
+        console.log(`🧹 Cleared cache keys:`, keys);
+        return true;
       } else {
         // Clear all page types for this URL
-        const pageTypes = ['home', 'product', 'category', 'checkout', 'cart', 'policy', 'other'];
-        const promises = pageTypes.map(type => 
-          this.remove(`analysis_${domain}:${type}`)
-        );
-        await Promise.all(promises);
-        console.log(`🧹 Cleared all caches for ${url}`);
+        const all = await chrome.storage.local.get(null);
+        const keys = Object.keys(all).filter(k => k.startsWith(`analysis_${domain}:`));
+        if (keys.length) {
+          await chrome.storage.local.remove(keys);
+        }
+        console.log(`🧹 Cleared all caches for domain ${domain}`);
         return true;
       }
     } catch (error) {

@@ -234,13 +234,30 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
         forms: string[];
     }): Promise<RiskSignal[]> {
         try {
+            // Seed lightweight local KB (no-op if already seeded)
+            const { VectorService, embedTextLocal } = await import('./vector');
+            await VectorService.seedIfEmpty();
+
             const initialized = await this.initializeSession();
             if (!initialized || !this.session) {
                 console.log('⚠️ AI not available, skipping dark pattern analysis');
                 return [];
             }
 
-            const prompt = `Analyze this e-commerce page for dark patterns and deceptive practices:
+            // Retrieval: create a compact query from page signals
+            const queryVec = embedTextLocal([
+                pageContent.title,
+                pageContent.headings.slice(0, 5).join(' '),
+                pageContent.buttons.slice(0, 8).join(' ')
+            ].join(' '));
+            const retrieved = await VectorService.search(queryVec, { topK: 4, threshold: 0.3 });
+
+            // Build minimal, targeted prompt using retrieved exemplars
+            const contextLines = retrieved.map(r => `- ${r.it.meta.kind}: ${r.it.meta.pattern || r.it.meta.label} — ${r.it.meta.description || r.it.meta.notes || ''}`);
+
+            const prompt = `Analyze dark patterns with retrieved context.
+Context:
+${contextLines.join('\n')}
 
 URL: ${pageContent.url}
 Title: ${pageContent.title}
@@ -321,6 +338,8 @@ No markdown code blocks, no explanations, JSON only.`;
         domainRegistrar?: string | null;
     }): Promise<RiskSignal[]> {
         try {
+            const { VectorService, embedTextLocal } = await import('./vector');
+            await VectorService.seedIfEmpty();
             const initialized = await this.initializeSession();
             if (!initialized || !this.session) {
                 console.log('⚠️ AI not available, skipping legitimacy analysis');
@@ -343,7 +362,24 @@ Domain Protection: ${pageData.domainStatus?.length || 0} status flags${pageData.
 - Total Social Platforms: ${pageData.socialMedia.count || 0}`
                 : 'Social Media: Unknown';
 
-            const prompt = `Evaluate the legitimacy of this e-commerce website:
+            // Retrieval for legitimacy cases
+            const legitimacySignals = [
+                pageData.hasHTTPS ? 'https' : 'no https',
+                pageData.hasContactInfo ? 'contact present' : 'contact missing',
+                pageData.hasPolicies ? 'policies present' : 'policies missing',
+                `domain age ${pageData.domainAge ?? 'unknown'}`,
+                `social ${pageData.socialMedia?.count ?? 0}`,
+                pageData.domainRegistrar || 'registrar unknown'
+            ].join(' ');
+            const qv = embedTextLocal(legitimacySignals);
+            const retrieved = await VectorService.search(qv, { topK: 3, threshold: 0.3 });
+            const contextLines = retrieved.map(r => `- ${r.it.meta.kind}: ${r.it.meta.label} — ${r.it.meta.notes}`);
+
+            const prompt = `Evaluate legitimacy using retrieved cases.
+Context:
+${contextLines.join('\n')}
+
+Evaluate the legitimacy of this e-commerce website:
 
 URL: ${pageData.url}
 Title: ${pageData.title}

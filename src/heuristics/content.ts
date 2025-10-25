@@ -157,6 +157,7 @@ export function checkPolicyPages(): PolicyAnalysis {
   const policyUrls: PolicyAnalysis['policyUrls'] = {};
   
   const allLinks = Array.from(document.querySelectorAll('a[href]'));
+  const bodyText = document.body.innerText.toLowerCase();
   
   const policyKeywords = {
     returns: ['return', 'returns'],
@@ -167,6 +168,31 @@ export function checkPolicyPages(): PolicyAnalysis {
   };
   
   const hasReturnPolicy = findPolicyLink(allLinks, policyKeywords.returns, policyUrls, 'returns');
+  // Item-level override: if page explicitly states no returns, treat returns as NOT available for this item
+  const noReturnPhrases = [
+    'no returns applicable',
+    'no return applicable',
+    'no returns',
+    'non returnable',
+    'non-returnable',
+    'final sale',
+    'no exchange',
+  ];
+  const itemSaysNoReturn = noReturnPhrases.some(p => bodyText.includes(p));
+
+  let effectiveHasReturnPolicy = hasReturnPolicy;
+  if (itemSaysNoReturn) {
+    effectiveHasReturnPolicy = false;
+    signals.push({
+      id: 'item-no-returns',
+      score: 12,
+      reason: 'This item states that returns are not applicable.',
+      severity: 'medium',
+      category: 'policy',
+      source: 'heuristic',
+      details: 'Detected phrases indicating no returns for this specific item.'
+    });
+  }
   const hasShippingPolicy = findPolicyLink(allLinks, policyKeywords.shipping, policyUrls, 'shipping');
   const hasRefundPolicy = findPolicyLink(allLinks, policyKeywords.refund, policyUrls, 'refund');
   const hasTermsOfService = findPolicyLink(allLinks, policyKeywords.terms, policyUrls, 'terms');
@@ -174,7 +200,7 @@ export function checkPolicyPages(): PolicyAnalysis {
   
   const missingPolicies: string[] = [];
   
-  if (!hasReturnPolicy) missingPolicies.push('return policy');
+  if (!effectiveHasReturnPolicy) missingPolicies.push('return policy');
   if (!hasShippingPolicy) missingPolicies.push('shipping policy');
   if (!hasRefundPolicy) missingPolicies.push('refund policy');
   if (!hasTermsOfService) missingPolicies.push('terms of service');
@@ -217,7 +243,7 @@ export function checkPolicyPages(): PolicyAnalysis {
   }
   
   return {
-    hasReturnPolicy,
+    hasReturnPolicy: effectiveHasReturnPolicy,
     hasShippingPolicy,
     hasRefundPolicy,
     hasTermsOfService,
@@ -246,6 +272,24 @@ function findPolicyLink(
     });
     
     if (matches) {
+      // Avoid false positives like "no returns", "non-returnable", "final sale"
+      if (policyType === 'returns' || policyType === 'refund') {
+        const negativePhrases = [
+          'no return', 'no returns', 'non return', 'non-return', 'non returnable', 'non-returnable',
+          'final sale', 'no exchange', 'no refund', 'non refundable', 'non-refundable'
+        ];
+        const lowerHref = href.toLowerCase();
+        const neg = negativePhrases.some(p => text.includes(p) || ariaLabel.includes(p) || lowerHref.includes(p.replace(/\s+/g, '')));
+        if (neg) {
+          continue; // do not count negative statements as a policy page
+        }
+
+        // Relaxed acceptance: allow help/returns/refund pages without the word "policy"
+        const allowPatterns = ['policy', 'return', 'returns', 'refund', 'replacement', '/help', '/gp/help', '/help/'];
+        const likelyPolicy = allowPatterns.some(k => text.includes(k) || ariaLabel.includes(k) || lowerHref.includes(k));
+        if (!likelyPolicy) continue;
+      }
+
       let absoluteUrl = href;
       if (href.startsWith('/')) {
         absoluteUrl = window.location.origin + href;
@@ -271,6 +315,22 @@ export async function runContentPolicyChecks(): Promise<{
   
   const contact = checkContactInfo();
   const policies = checkPolicyPages();
+
+  // Detect category/page-level content differences that often change by section
+  const bodyText = document.body.innerText.toLowerCase();
+  const categorySignals: RiskSignal[] = [];
+  if (/final sale|clearance only|non\s*returnable|intimate wear|hygiene product/.test(bodyText)) {
+    categorySignals.push({
+      id: 'category-hygiene-noreturns',
+      score: 8,
+      reason: 'This category often restricts returns (hygiene/sensitive items).',
+      severity: 'low',
+      category: 'policy',
+      source: 'heuristic',
+      details: 'Detected phrases indicating category-specific return restrictions.'
+    });
+  }
+  policies.signals.push(...categorySignals);
   
   console.log('✅ Content & policy checks complete', {
     contactSignals: contact.signals.length,
