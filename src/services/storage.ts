@@ -24,13 +24,6 @@ const CACHE_DURATION_MS = 15 * 60 * 1000;      // 15 minutes
 const PROGRESS_TIMEOUT_MS = 60 * 1000;         // 60 seconds
 const LOCK_TIMEOUT_MS = 90 * 1000;             // 90 seconds (longer than analysis typically takes)
 
-/**
- * Check if the extension context is valid and Chrome APIs are available
- */
-function isExtensionContextValid(): boolean {
-  return !!(chrome?.storage?.local && typeof chrome.storage.local.get === 'function');
-}
-
 export const StorageService = {
   /**
    * Get the most recent cached analysis for a domain irrespective of path

@@ -43,8 +43,24 @@ export async function getDarkPatternExplanation(contextSnippet: string): Promise
     }
 }
 import { RiskSignal } from '../types';
+interface AIRiskSignal {
+    pattern: string;
+    severity: 'low' | 'medium' | 'high';
+    score: number;
+    reason: string;
+    details?: string;
+    location?: string;
+}
 
-// Chrome Built-in AI Prompt API types (NEW API)
+interface AILegitimacySignal {
+    issue: string;
+    severity: 'low' | 'medium' | 'high';
+    score: number;
+    reason: string;
+    details?: string;
+}
+
+type AIResponse = AIRiskSignal[] | AILegitimacySignal[];
 interface AICapabilities {
     available: 'readily' | 'after-download' | 'downloadable' | 'unavailable';
     defaultTemperature?: number;
@@ -253,7 +269,9 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
             const retrieved = await VectorService.search(queryVec, { topK: 4, threshold: 0.3 });
 
             // Build minimal, targeted prompt using retrieved exemplars
-            const contextLines = retrieved.map(r => `- ${r.it.meta.kind}: ${r.it.meta.pattern || r.it.meta.label} — ${r.it.meta.description || r.it.meta.notes || ''}`);
+            const contextLines = retrieved.map(r =>
+                `- ${r.it.meta.kind}: ${r.it.meta.pattern || r.it.meta.label} — ${r.it.meta.description || r.it.meta.notes || ''}`
+            );
 
             const prompt = `Analyze dark patterns with retrieved context.
 Context:
@@ -294,13 +312,13 @@ No markdown code blocks, no explanations, JSON only.`;
             console.log('🤖 AI Dark Pattern Analysis:', response);
 
             // Parse AI response
-            const findings = this.parseAIResponse(response);
+            const findings: AIResponse = this.parseAIResponse(response);
 
             // Sort by score (highest first) to prioritize major issues
-            const sortedFindings = findings.sort((a: any, b: any) => (b.score || 0) - (a.score || 0));
+            const sortedFindings = (findings as AIRiskSignal[]).sort((a, b) => (b.score || 0) - (a.score || 0));
 
             // Convert to RiskSignal format (limit to top 5)
-            return sortedFindings.slice(0, 5).map((finding: any, index: number) => ({
+            return sortedFindings.slice(0, 5).map((finding, index: number) => ({
                 id: `ai-dark-${index + 1}`,
                 score: finding.score,
                 reason: finding.reason,
@@ -353,7 +371,11 @@ No markdown code blocks, no explanations, JSON only.`;
             const domainInfo = pageData.domainAge !== undefined && pageData.domainAge !== null
                 ? `Domain Age: ${pageData.domainAge} days (${pageData.domainAgeYears || Math.floor(pageData.domainAge / 365)} years)
 Domain Registrar: ${pageData.domainRegistrar || 'Unknown'}
-Domain Protection: ${pageData.domainStatus?.length || 0} status flags${pageData.domainStatus && pageData.domainStatus.length > 0 ? ` (${pageData.domainStatus.slice(0, 3).join(', ')})` : ''}`
+Domain Protection: ${pageData.domainStatus?.length || 0} status flags${
+    pageData.domainStatus && pageData.domainStatus.length > 0
+        ? ` (${pageData.domainStatus.slice(0, 3).join(', ')})`
+        : ''
+}`
                 : 'Domain Age: Unknown';
 
             const socialInfo = pageData.socialMedia
@@ -419,13 +441,13 @@ JSON only, no markdown.`;
             const response = await this.session.prompt(prompt);
             console.log('🤖 AI Legitimacy Analysis:', response);
 
-            const concerns = this.parseAIResponse(response);
+            const concerns: AIResponse = this.parseAIResponse(response);
 
             // Sort by score (highest first) to prioritize major issues
-            const sortedConcerns = concerns.sort((a: any, b: any) => (b.score || 0) - (a.score || 0));
+            const sortedConcerns = (concerns as AILegitimacySignal[]).sort((a, b) => (b.score || 0) - (a.score || 0));
 
             // Limit to top 5 concerns to prevent token overflow
-            return sortedConcerns.slice(0, 5).map((concern: any, index: number) => ({
+            return sortedConcerns.slice(0, 5).map((concern, index: number) => ({
                 id: `ai-legit-${index + 1}`,
                 score: concern.score,
                 reason: concern.reason,
@@ -443,7 +465,7 @@ JSON only, no markdown.`;
     /**
      * Parse AI response (handle both JSON and text responses)
      */
-    private static parseAIResponse(response: string): any {
+    private static parseAIResponse(response: string): AIResponse {
         try {
             // Remove markdown code blocks if present
             let cleaned = response.trim();

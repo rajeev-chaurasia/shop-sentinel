@@ -8,7 +8,7 @@ import { RiskMeter, ReasonsList, PolicySummary } from '../components';
 function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'reasons' | 'policies'>('overview');
   const [useAI, setUseAI] = useState(true);
-  // Removed explicit cached state; instantaneous response implies cache
+  const [isFromCache, setIsFromCache] = useState(false);
   const [pollInterval, setPollInterval] = useState<number | null>(null);
   const [annotationsVisible, setAnnotationsVisible] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false); // Prevent race conditions
@@ -110,31 +110,49 @@ function App() {
     const handleStorageChange = async (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
       if (areaName !== 'local') return;
       
-      try {
-        const tab = await MessagingService.getActiveTab();
-        if (!tab?.url) return;
-        
-        const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
-        if (!pageInfoResponse.success || !pageInfoResponse.data) return;
-        
-        const pageType = pageInfoResponse.data.pageType || 'other';
-        const domain = new URL(tab.url).hostname.replace(/^www\./, '');
-        const prefix = `analysis_${domain}:${pageType}`; // may include :path suffix
+      // Debounce the update
+      if (updateTimeout) {
+        clearTimeout(updateTimeout);
+      }
+      
+      updateTimeout = setTimeout(async () => {
+        try {
+          const tab = await MessagingService.getActiveTab();
+          if (!tab?.url) return;
+          
+          const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+          if (!pageInfoResponse.success || !pageInfoResponse.data) return;
+          
+          const pageType = pageInfoResponse.data.pageType || 'other';
+          const domain = new URL(tab.url).hostname.replace(/^www\./, '');
+          const prefix = `analysis_${domain}:${pageType}`; // may include :path suffix
 
-        // Find any changed key for this domain+pageType (path-scoped or not)
-        const relevantKey = Object.keys(changes).find(k => k.startsWith(prefix));
-        if (relevantKey) {
-          const change = changes[relevantKey];
-          if (change && change.newValue) {
-            console.log('📡 Analysis updated via storage change:', relevantKey);
-            const cached = change.newValue as any;
-            if (cached.result && !cached.expiresAt) {
-              setAnalysisResult(cached);
-            } else if (cached.result && Date.now() < cached.expiresAt) {
-              setAnalysisResult(cached.result);
-            }
-            if (isLoading) {
-              completeAnalysis();
+          // Find any changed key for this domain+pageType (path-scoped or not)
+          const relevantKey = Object.keys(changes).find(k => k.startsWith(prefix));
+          if (relevantKey) {
+            const change = changes[relevantKey];
+            if (change && change.newValue) {
+              console.log('📡 Analysis updated via storage change:', relevantKey);
+              const cached = change.newValue as any;
+              
+              // Handle new format: { result, expiresAt }
+              if (cached.result && cached.expiresAt && Date.now() < cached.expiresAt) {
+                if (isValidAnalysisResult(cached.result)) {
+                  setAnalysisResult(cached.result);
+                  setIsFromCache(true);
+                  // Update icon badge for cached results
+                  updateIconForCachedResult(cached.result);
+                  if (isLoading) completeAnalysis();
+                }
+              }
+              // Legacy support: direct result object (shouldn't happen with new storage format)
+              else if (isValidAnalysisResult(cached)) {
+                setAnalysisResult(cached);
+                setIsFromCache(true);
+                // Update icon badge for cached results
+                updateIconForCachedResult(cached);
+                if (isLoading) completeAnalysis();
+              }
             }
           }
         } catch (error) {
@@ -204,8 +222,10 @@ function App() {
       if (cached && isValidAnalysisResult(cached)) {
         console.log(`✅ Cache hit for ${pageType}:`, cached);
         setAnalysisResult(cached);
+        setIsFromCache(true);
       } else {
         console.log(`❌ No cache found for ${pageType} - ready to analyze`);
+        setIsFromCache(false);
       }
     } catch (error) {
       console.error('Failed to load cache:', error);
@@ -273,6 +293,7 @@ function App() {
     
     try {
       setIsUpdating(true);
+      setIsFromCache(false); // Reset cache flag for fresh analysis
       
       const tab = await MessagingService.getActiveTab();
       if (!tab?.url) {
@@ -465,7 +486,12 @@ function App() {
             <div className="flex-1 flex flex-col">
               <div className="px-4 pt-4 pb-2">
                 <div className="flex items-center justify-between mb-3">
-                  {/* Removed explicit cached badge; speed implies cache */}
+                  {isFromCache && (
+                    <div className="flex items-center gap-2 text-xs text-gray-600 bg-blue-50 px-3 py-1.5 rounded-lg">
+                      <span>⚡</span>
+                      <span>Previously analyzed</span>
+                    </div>
+                  )}
                   {/* Removed manual refresh; smart button handles cache vs analyze */}
                 </div>
                 <div className="flex gap-1 bg-gray-100 rounded-xl p-1.5 shadow-inner">

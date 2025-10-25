@@ -127,11 +127,6 @@ export function PolicySummary({
                         <div className="font-black text-green-900 text-base">
                           {policy.label}
                         </div>
-                        {url && (
-                          <div className="text-xs text-green-700 mt-0.5 font-medium break-words break-all whitespace-normal">
-                            {url}
-                          </div>
-                        )}
                       </div>
                     </div>
                     {url && (
@@ -170,11 +165,7 @@ export function PolicySummary({
                             </div>
                           )}
                         </>
-                      ) : (
-                        <div className="text-xs leading-relaxed break-any">
-                          We found a {policy.label.toLowerCase()} page for this store. Please click “View” to see the exact conditions (who pays shipping, time window, exclusions).
-                        </div>
-                      )}
+                      ) : null}
                     </div>
                   </div>
                 </div>

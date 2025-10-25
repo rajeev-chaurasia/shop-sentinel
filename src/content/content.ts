@@ -574,40 +574,13 @@ async function handleUpdateIcon(payload: { riskLevel: string; badgeText: string 
   try {
     await chrome.runtime.sendMessage({
       action: 'UPDATE_ICON',
-      payload: payload,
-      sender: { tab: { id: await getCurrentTabId() } }
+      payload: payload
     });
     console.log('✅ UPDATE_ICON forwarded to service worker');
   } catch (error) {
     console.error('❌ Failed to forward UPDATE_ICON to service worker:', error);
   }
 }
-
-async function getCurrentTabId(): Promise<number> {
-  return new Promise((resolve) => {
-    chrome.runtime.sendMessage({ action: 'GET_TAB_ID' }, (response) => {
-      if (response?.tabId) {
-        resolve(response.tabId);
-      } else {
-        // Fallback: query for current tab
-        chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-          resolve(tabs[0]?.id || 0);
-        });
-      }
-    });
-  });
-}
-
-chrome.runtime.onMessage.addListener(
-  createMessageHandler({
-    PING: handlePing,
-    GET_PAGE_INFO: handleGetPageInfo,
-    ANALYZE_PAGE: handleAnalyzePage,
-    HIGHLIGHT_ELEMENTS: handleHighlightElements,
-    CLEAR_HIGHLIGHTS: handleClearHighlights,
-    UPDATE_ICON: handleUpdateIcon,
-  })
-);
 
 // ============================================================================
 // URL CHANGE MONITORING (for SPAs)
@@ -763,6 +736,7 @@ function initializeContentScript() {
     ANALYZE_PAGE: handleAnalyzePage,
     HIGHLIGHT_ELEMENTS: handleHighlightElements,
     CLEAR_HIGHLIGHTS: handleClearHighlights,
+    UPDATE_ICON: handleUpdateIcon,
   });
   
   chrome.runtime.onMessage.addListener(messageHandler);

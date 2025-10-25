@@ -181,11 +181,11 @@ export function checkPolicyPages(): PolicyAnalysis {
   const bodyText = document.body.innerText.toLowerCase();
   
   const policyKeywords = {
-    returns: ['return', 'returns'],
-    shipping: ['shipping', 'delivery', 'ship'],
-    refund: ['refund', 'refunds', 'money back'],
-    terms: ['terms', 'terms of service', 'tos', 'terms and conditions', 'conditions'],
-    privacy: ['privacy', 'privacy policy', 'data protection'],
+    returns: ['return policy', 'returns policy', 'return & exchange', 'exchange policy'],
+    shipping: ['shipping policy', 'delivery policy', 'shipping info', 'delivery information'],
+    refund: ['refund policy', 'money back guarantee', 'refund process'],
+    terms: ['terms of service', 'terms & conditions', 'terms of use', 'user agreement'],
+    privacy: ['privacy policy', 'privacy statement', 'data policy', 'privacy notice'],
   };
   
   const hasReturnPolicy = findPolicyLink(allLinks, policyKeywords.returns, policyUrls, 'returns');
@@ -282,8 +282,24 @@ function findPolicyLink(
 ): boolean {
   for (const link of links) {
     const href = link.getAttribute('href') || '';
-    const text = link.textContent?.toLowerCase() || '';
+    const text = link.textContent?.toLowerCase().trim() || '';
     const ariaLabel = link.getAttribute('aria-label')?.toLowerCase() || '';
+    
+    // Skip if href is empty, just #, or external links
+    if (!href || href === '#' || href.startsWith('javascript:') || href.startsWith('mailto:') || href.startsWith('tel:')) {
+      continue;
+    }
+    
+    // Skip links that are clearly not policy pages
+    const skipPatterns = [
+      'return to', 'back to', 'go back', 'continue shopping', 'add to cart', 'buy now',
+      'login', 'sign in', 'register', 'account', 'profile', 'wishlist', 'favorites',
+      'contact us', 'help', 'support', 'faq', 'search', 'home', 'homepage'
+    ];
+    
+    if (skipPatterns.some(pattern => text.includes(pattern) || ariaLabel.includes(pattern))) {
+      continue;
+    }
     
     const matches = keywords.some(keyword => {
       const keywordLower = keyword.toLowerCase();
@@ -304,11 +320,6 @@ function findPolicyLink(
         if (neg) {
           continue; // do not count negative statements as a policy page
         }
-
-        // Relaxed acceptance: allow help/returns/refund pages without the word "policy"
-        const allowPatterns = ['policy', 'return', 'returns', 'refund', 'replacement', '/help', '/gp/help', '/help/'];
-        const likelyPolicy = allowPatterns.some(k => text.includes(k) || ariaLabel.includes(k) || lowerHref.includes(k));
-        if (!likelyPolicy) continue;
       }
 
       let absoluteUrl = href;
@@ -334,7 +345,7 @@ export async function runContentPolicyChecks(): Promise<{
 }> {
   console.log('📋 Running content & policy checks...');
   
-  const contact = checkContactInfo();
+  const contact = await checkContactInfo();
   const policies = checkPolicyPages();
 
   // Detect category/page-level content differences that often change by section
