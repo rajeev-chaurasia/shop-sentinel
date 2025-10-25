@@ -597,6 +597,91 @@ const messageHandlers = {
 };
 
 /**
+ * Cross-tab coordination state
+ */
+const crossTabState = new Map<string, {
+  activeTabs: Set<number>;
+  lastActivity: number;
+  coordinatingTab?: number;
+}>();
+
+/**
+ * Handle cross-tab coordination messages
+ */
+async function handleCrossTabCoordination(payload: any, sourceTabId?: number): Promise<void> {
+  const { type, url } = payload;
+
+  switch (type) {
+    case 'ANALYSIS_START':
+      // Register analysis start for coordination
+      if (!crossTabState.has(url)) {
+        crossTabState.set(url, {
+          activeTabs: new Set(),
+          lastActivity: Date.now()
+        });
+      }
+
+      const state = crossTabState.get(url)!;
+      state.activeTabs.add(sourceTabId!);
+      state.coordinatingTab = sourceTabId;
+      state.lastActivity = Date.now();
+
+      console.log(`🚀 Cross-tab: Analysis started for ${url} by tab ${sourceTabId}`);
+      break;
+
+    case 'ANALYSIS_COMPLETE':
+      // Clear coordination state when analysis completes
+      if (crossTabState.has(url)) {
+        const state = crossTabState.get(url)!;
+        state.activeTabs.delete(sourceTabId!);
+
+        // If this was the coordinating tab, clear the state
+        if (state.coordinatingTab === sourceTabId) {
+          crossTabState.delete(url);
+          console.log(`✅ Cross-tab: Analysis completed for ${url}, clearing coordination`);
+        }
+      }
+      break;
+
+    case 'HEARTBEAT':
+      // Update activity timestamp
+      if (crossTabState.has(url)) {
+        crossTabState.get(url)!.lastActivity = Date.now();
+      }
+      break;
+
+    default:
+      console.warn(`⚠️ Unknown cross-tab coordination type: ${type}`);
+  }
+
+  // Clean up stale coordination states (older than 10 minutes)
+  const cutoff = Date.now() - (10 * 60 * 1000);
+  for (const [urlKey, state] of crossTabState.entries()) {
+    if (state.lastActivity < cutoff) {
+      crossTabState.delete(urlKey);
+      console.log(`🧹 Cleaned up stale cross-tab coordination for ${urlKey}`);
+    }
+  }
+}
+
+/**
+ * Check if URL is currently being analyzed by another tab
+ */
+function isUrlBeingAnalyzed(url: string, excludeTabId?: number): boolean {
+  const state = crossTabState.get(url);
+  if (!state) return false;
+
+  // Check if any other tab is actively analyzing
+  for (const tabId of state.activeTabs) {
+    if (tabId !== excludeTabId) {
+      return true;
+    }
+  }
+
+  return false;
+}
+
+/**
  * Message listener for background service worker
  */
 chrome.runtime.onMessage.addListener((
@@ -721,6 +806,18 @@ chrome.runtime.onMessage.addListener((
         sendResponse(createErrorResponse('No tab ID available'));
       }
       return false;
+      
+    case 'CROSS_TAB_COORDINATE':
+      // Handle cross-tab coordination messages
+      if (typedMessage.payload && typedMessage.payload.type) {
+        handleCrossTabCoordination(typedMessage.payload, tabId)
+          .then(() => sendResponse(createSuccessResponse({ success: true })))
+          .catch((error: any) => sendResponse(createErrorResponse(error.message)));
+        return true;
+      } else {
+        sendResponse(createErrorResponse('Invalid cross-tab coordination payload'));
+        return false;
+      }
   }
   
   // Handle other actions with the messageHandlers object
@@ -800,6 +897,7 @@ chrome.tabs.onRemoved.addListener((tabId) => {
 // Service worker lifecycle events
 chrome.runtime.onStartup.addListener(() => {
   console.log('🚀 Shop Sentinel service worker started');
+  initializeBackgroundTasks();
 });
 
 chrome.runtime.onInstalled.addListener((details) => {
@@ -807,15 +905,315 @@ chrome.runtime.onInstalled.addListener((details) => {
   
   if (details.reason === 'install') {
     console.log('🎉 Shop Sentinel extension installed successfully!');
+    initializeBackgroundTasks();
   } else if (details.reason === 'update') {
     console.log('🔄 Shop Sentinel extension updated');
+    initializeBackgroundTasks();
   }
 });
+
+// Enhanced background task management
+class BackgroundTaskManager {
+  private static instance: BackgroundTaskManager;
+  private maintenanceInterval: number | null = null;
+  private cacheCleanupInterval: number | null = null;
+  private retryQueue: Array<{
+    id: string;
+    action: string;
+    payload: any;
+    attempts: number;
+    nextRetry: number;
+  }> = [];
+  private isOnline: boolean = navigator.onLine;
+
+  private constructor() {}
+
+  static getInstance(): BackgroundTaskManager {
+    if (!BackgroundTaskManager.instance) {
+      BackgroundTaskManager.instance = new BackgroundTaskManager();
+    }
+    return BackgroundTaskManager.instance;
+  }
+
+  /**
+   * Initialize all background tasks
+   */
+  initialize(): void {
+    this.startMaintenanceTasks();
+    this.startCacheCleanup();
+    this.setupNetworkListeners();
+    this.processRetryQueue();
+  }
+
+  /**
+   * Start periodic maintenance tasks
+   */
+  private startMaintenanceTasks(): void {
+    // Run maintenance every 30 minutes
+    this.maintenanceInterval = self.setInterval(() => {
+      this.performMaintenance();
+    }, 30 * 60 * 1000);
+
+    // Initial maintenance run
+    setTimeout(() => this.performMaintenance(), 5000);
+  }
+
+  /**
+   * Start cache cleanup tasks
+   */
+  private startCacheCleanup(): void {
+    // Clean up expired cache entries every 15 minutes
+    this.cacheCleanupInterval = self.setInterval(() => {
+      this.cleanupExpiredCache();
+    }, 15 * 60 * 1000);
+
+    // Initial cleanup
+    setTimeout(() => this.cleanupExpiredCache(), 10000);
+  }
+
+  /**
+   * Set up network status listeners
+   */
+  private setupNetworkListeners(): void {
+    self.addEventListener('online', () => {
+      console.log('🌐 Network connection restored');
+      this.isOnline = true;
+      this.processRetryQueue();
+    });
+
+    self.addEventListener('offline', () => {
+      console.log('📴 Network connection lost');
+      this.isOnline = false;
+    });
+  }
+
+  /**
+   * Perform periodic maintenance tasks
+   */
+  private async performMaintenance(): Promise<void> {
+    try {
+      console.log('🔧 Running background maintenance...');
+
+      // Clean up old tab states
+      this.cleanupTabStates();
+
+      // Validate cache integrity
+      await this.validateCacheIntegrity();
+
+      // Update statistics
+      this.updateBackgroundStats();
+
+      console.log('✅ Background maintenance completed');
+    } catch (error) {
+      console.error('❌ Background maintenance failed:', error);
+    }
+  }
+
+  /**
+   * Clean up expired cache entries
+   */
+  private async cleanupExpiredCache(): Promise<void> {
+    try {
+      console.log('🧹 Cleaning up expired cache entries...');
+
+      const now = Date.now();
+      let cleanedCount = 0;
+
+      // Clean up validation cache
+      for (const [key, entry] of validationCache.entries()) {
+        if (now - entry.timestamp > VALIDATION_CONFIG.CACHE_DURATION) {
+          validationCache.delete(key);
+          cleanedCount++;
+        }
+      }
+
+      // Clean up Chrome storage cache entries
+      const allStorage = await chrome.storage.local.get(null);
+      const expiredKeys: string[] = [];
+
+      for (const [key, value] of Object.entries(allStorage)) {
+        if (key.startsWith('analysis_') && typeof value === 'object' && value !== null) {
+          const cached = value as any;
+          if (cached.expiresAt && now > cached.expiresAt) {
+            expiredKeys.push(key);
+            cleanedCount++;
+          }
+        }
+      }
+
+      if (expiredKeys.length > 0) {
+        await chrome.storage.local.remove(expiredKeys);
+        console.log(`🗑️ Removed ${expiredKeys.length} expired storage cache entries`);
+      }
+
+      console.log(`✅ Cache cleanup completed: ${cleanedCount} entries removed`);
+    } catch (error) {
+      console.error('❌ Cache cleanup failed:', error);
+    }
+  }
+
+  /**
+   * Clean up old tab states
+   */
+  private cleanupTabStates(): void {
+    const now = Date.now();
+    const cutoff = now - (60 * 60 * 1000); // 1 hour ago
+
+    let cleanedCount = 0;
+    for (const [tabId, state] of tabStates.entries()) {
+      if (now - state.timestamp > cutoff) {
+        tabStates.delete(tabId);
+        cleanedCount++;
+      }
+    }
+
+    if (cleanedCount > 0) {
+      console.log(`🧹 Cleaned up ${cleanedCount} stale tab states`);
+    }
+  }
+
+  /**
+   * Validate cache integrity
+   */
+  private async validateCacheIntegrity(): Promise<void> {
+    try {
+      const allStorage = await chrome.storage.local.get(null);
+      let invalidCount = 0;
+
+      for (const [key, value] of Object.entries(allStorage)) {
+        if (key.startsWith('analysis_')) {
+          if (!this.isValidCacheEntry(value)) {
+            await chrome.storage.local.remove(key);
+            invalidCount++;
+          }
+        }
+      }
+
+      if (invalidCount > 0) {
+        console.log(`🔧 Fixed ${invalidCount} invalid cache entries`);
+      }
+    } catch (error) {
+      console.error('❌ Cache integrity validation failed:', error);
+    }
+  }
+
+  /**
+   * Check if a cache entry is valid
+   */
+  private isValidCacheEntry(entry: any): boolean {
+    return (
+      entry &&
+      typeof entry === 'object' &&
+      typeof entry.result === 'object' &&
+      typeof entry.expiresAt === 'number' &&
+      entry.expiresAt > Date.now()
+    );
+  }
+
+  /**
+   * Update background processing statistics
+   */
+  private updateBackgroundStats(): void {
+    const stats = {
+      tabStatesCount: tabStates.size,
+      validationCacheSize: validationCache.size,
+      retryQueueSize: this.retryQueue.length,
+      isOnline: this.isOnline,
+      timestamp: Date.now()
+    };
+
+    // Store stats in memory for debugging (could be persisted if needed)
+    (self as any).backgroundStats = stats;
+  }
+
+  /**
+   * Add operation to retry queue for offline scenarios
+   */
+  addToRetryQueue(action: string, payload: any): string {
+    const retryId = `retry_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
+
+    this.retryQueue.push({
+      id: retryId,
+      action,
+      payload,
+      attempts: 0,
+      nextRetry: Date.now() + 5000 // Initial retry in 5 seconds
+    });
+
+    console.log(`📋 Added ${action} to retry queue (${retryId})`);
+    return retryId;
+  }
+
+  /**
+   * Process retry queue when online
+   */
+  private async processRetryQueue(): Promise<void> {
+    if (!this.isOnline || this.retryQueue.length === 0) return;
+
+    console.log(`🔄 Processing ${this.retryQueue.length} items in retry queue...`);
+
+    const now = Date.now();
+    const toProcess = this.retryQueue.filter(item => item.nextRetry <= now);
+
+    for (const item of toProcess) {
+      try {
+        await this.executeRetryItem(item);
+        // Remove successful items
+        this.retryQueue = this.retryQueue.filter(i => i.id !== item.id);
+        console.log(`✅ Retry successful for ${item.action}`);
+      } catch (error) {
+        item.attempts++;
+        if (item.attempts >= 3) {
+          // Remove after 3 failed attempts
+          this.retryQueue = this.retryQueue.filter(i => i.id !== item.id);
+          console.error(`❌ Retry failed permanently for ${item.action}:`, error);
+        } else {
+          // Exponential backoff
+          item.nextRetry = now + Math.pow(2, item.attempts) * 30000; // 30s, 1m, 2m
+          console.log(`⏳ Retry scheduled for ${item.action} (attempt ${item.attempts + 1})`);
+        }
+      }
+    }
+  }
+
+  /**
+   * Execute a retry queue item
+   */
+  private async executeRetryItem(item: any): Promise<void> {
+    // This would contain the actual retry logic based on the action type
+    switch (item.action) {
+      case 'VALIDATE_SOCIAL_URLS':
+        await SocialMediaValidator.getInstance().validateUrls(item.payload.urls);
+        break;
+      default:
+        throw new Error(`Unknown retry action: ${item.action}`);
+    }
+  }
+
+  /**
+   * Shutdown background tasks
+   */
+  shutdown(): void {
+    if (this.maintenanceInterval) {
+      clearInterval(this.maintenanceInterval);
+      this.maintenanceInterval = null;
+    }
+    if (this.cacheCleanupInterval) {
+      clearInterval(this.cacheCleanupInterval);
+      this.cacheCleanupInterval = null;
+    }
+  }
+}
+
+// Initialize background tasks
+function initializeBackgroundTasks(): void {
+  BackgroundTaskManager.getInstance().initialize();
+}
 
 // Cleanup on service worker shutdown
 self.addEventListener('beforeunload', () => {
   console.log('🛑 Shop Sentinel service worker shutting down');
-  // Clear any pending timeouts or intervals if needed
+  BackgroundTaskManager.getInstance().shutdown();
 });
 
-console.log('🛡️ Shop Sentinel service worker loaded');
+console.log('🛡️ Shop Sentinel service worker loaded with enhanced background processing');
