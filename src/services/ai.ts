@@ -1,6 +1,66 @@
-import { RiskSignal } from '../types';
+/**
+ * AI-powered dark pattern explainer
+ * Uses Chrome's local AI model to generate a friendly explanation
+ */
+export async function getDarkPatternExplanation(contextSnippet: string): Promise<string> {
+    try {
+        // Check for window.ai or LanguageModel API
+        const aiAvailable = typeof window !== 'undefined' &&
+            (window as any).ai && typeof (window as any).ai.createTextSession === 'function';
+        const lmAvailable = typeof LanguageModel !== 'undefined';
 
-// Chrome Built-in AI Prompt API types (NEW API)
+        if (!aiAvailable && !lmAvailable) {
+            return 'This may be a deceptive design.';
+        }
+
+        // Construct prompt
+        const prompt = `You are a helpful shopping assistant who protects users from deceptive designs. Analyze the following snippet from an e-commerce site and explain in one friendly, concise sentence how it might be trying to pressure the user. Snippet: ${contextSnippet}`;
+
+        // Use LanguageModel if available
+        if (lmAvailable) {
+            const session = await LanguageModel.create({
+                temperature: 0.7,
+                topK: 3,
+                initialPrompts: [{ role: 'system', content: 'You are a helpful shopping assistant who explains dark patterns.' }],
+            });
+            const response = await session.prompt(prompt);
+            session.destroy();
+            return response.trim();
+        }
+
+        // Fallback: Use window.ai
+        if (aiAvailable) {
+            const session = await (window as any).ai.createTextSession();
+            const response = await session.prompt(prompt);
+            session.destroy();
+            return response.trim();
+        }
+
+        return 'This may be a deceptive design.';
+    } catch (err) {
+        console.warn('AI explainer error:', err);
+        return 'This may be a deceptive design.';
+    }
+}
+import { RiskSignal } from '../types';
+interface AIRiskSignal {
+    pattern: string;
+    severity: 'low' | 'medium' | 'high';
+    score: number;
+    reason: string;
+    details?: string;
+    location?: string;
+}
+
+interface AILegitimacySignal {
+    issue: string;
+    severity: 'low' | 'medium' | 'high';
+    score: number;
+    reason: string;
+    details?: string;
+}
+
+type AIResponse = AIRiskSignal[] | AILegitimacySignal[];
 interface AICapabilities {
     available: 'readily' | 'after-download' | 'downloadable' | 'unavailable';
     defaultTemperature?: number;
@@ -190,36 +250,75 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
         forms: string[];
     }): Promise<RiskSignal[]> {
         try {
+            // Seed lightweight local KB (no-op if already seeded)
+            const { VectorService, embedTextLocal } = await import('./vector');
+            await VectorService.seedIfEmpty();
+
             const initialized = await this.initializeSession();
             if (!initialized || !this.session) {
                 console.log('⚠️ AI not available, skipping dark pattern analysis');
                 return [];
             }
 
-            const prompt = `Analyze for dark patterns: ${pageContent.url}
+            // Retrieval: create a compact query from page signals
+            const queryVec = embedTextLocal([
+                pageContent.title,
+                pageContent.headings.slice(0, 5).join(' '),
+                pageContent.buttons.slice(0, 8).join(' ')
+            ].join(' '));
+            const retrieved = await VectorService.search(queryVec, { topK: 4, threshold: 0.3 });
 
-Headings: ${pageContent.headings.slice(0, 8).join(', ')}
-Buttons: ${pageContent.buttons.slice(0, 10).join(', ')}
+            // Build minimal, targeted prompt using retrieved exemplars
+            const contextLines = retrieved.map(r =>
+                `- ${r.it.meta.kind}: ${r.it.meta.pattern || r.it.meta.label} — ${r.it.meta.description || r.it.meta.notes || ''}`
+            );
 
-Check for: False urgency, Hidden costs, Trick questions, Forced continuity, Bait & switch, Confirmshaming
+            const prompt = `Analyze dark patterns with retrieved context.
+Context:
+${contextLines.join('\n')}
 
-Return JSON (max 5 patterns, highest severity/score first):
-[{"pattern":"name","severity":"low|medium|high","score":1-15,"reason":"why","details":"evidence","location":"where"}]
+URL: ${pageContent.url}
+Title: ${pageContent.title}
+Headings: ${pageContent.headings.slice(0, 10).join(', ')}
+Buttons: ${pageContent.buttons.slice(0, 15).join(', ')}
+Forms: ${pageContent.forms.slice(0, 5).join(', ')}
 
-If none, return: []
-JSON only.`;
+Identify any dark patterns such as:
+- False urgency (fake scarcity, countdown timers)
+- Forced continuity (hard to cancel subscriptions)
+- Hidden costs (surprise fees at checkout)
+- Trick questions (confusing opt-out checkboxes)
+- Bait and switch (misleading product descriptions)
+- Confirmshaming (guilt-tripping language)
+
+IMPORTANT: Return ONLY valid JSON array, no other text or markdown.
+Format:
+[
+  {
+    "pattern": "pattern name",
+    "severity": "low",
+    "score": 5,
+    "reason": "brief description",
+    "details": "specific evidence",
+    "location": "where found"
+  }
+]
+
+If no patterns found, return: []
+
+No markdown code blocks, no explanations, JSON only.`;
 
             const response = await this.session.prompt(prompt);
             console.log('🤖 AI Dark Pattern Analysis:', response);
 
             // Parse AI response
-            const findings = this.parseAIResponse(response);
+            const findings: AIResponse = this.parseAIResponse(response);
 
             // Sort by score (highest first) to prioritize major issues
-            const sortedFindings = findings.sort((a: any, b: any) => (b.score || 0) - (a.score || 0));
+            const sortedFindings = (findings as AIRiskSignal[]).sort((a, b) => (b.score || 0) - (a.score || 0));
 
             // Convert to RiskSignal format (limit to top 5)
-            return sortedFindings.slice(0, 5).map((finding: any, index: number) => ({
+            return sortedFindings.slice(0, 5).map((finding, index: number) => ({
                 id: `ai-dark-${index + 1}`,
                 score: finding.score,
                 reason: finding.reason,
@@ -260,6 +359,8 @@ JSON only.`;
         domainRegistrar?: string | null;
     }): Promise<RiskSignal[]> {
         try {
+            const { VectorService, embedTextLocal } = await import('./vector');
+            await VectorService.seedIfEmpty();
             const initialized = await this.initializeSession();
             if (!initialized || !this.session) {
                 console.log('⚠️ AI not available, skipping legitimacy analysis');
@@ -270,7 +371,11 @@ JSON only.`;
             const domainInfo = pageData.domainAge !== undefined && pageData.domainAge !== null
                 ? `Domain Age: ${pageData.domainAge} days (${pageData.domainAgeYears || Math.floor(pageData.domainAge / 365)} years)
 Domain Registrar: ${pageData.domainRegistrar || 'Unknown'}
-Domain Protection: ${pageData.domainStatus?.length || 0} status flags${pageData.domainStatus && pageData.domainStatus.length > 0 ? ` (${pageData.domainStatus.slice(0, 3).join(', ')})` : ''}`
+Domain Protection: ${pageData.domainStatus?.length || 0} status flags${
+    pageData.domainStatus && pageData.domainStatus.length > 0
+        ? ` (${pageData.domainStatus.slice(0, 3).join(', ')})`
+        : ''
+}`
                 : 'Domain Age: Unknown';
 
             const socialInfo = pageData.socialMedia
@@ -282,7 +387,41 @@ Domain Protection: ${pageData.domainStatus?.length || 0} status flags${pageData.
 - Total Social Platforms: ${pageData.socialMedia.count || 0}`
                 : 'Social Media: Unknown';
 
-            const prompt = `Evaluate legitimacy of: ${pageData.url}
+            // Retrieval for legitimacy cases
+            const legitimacySignals = [
+                pageData.hasHTTPS ? 'https' : 'no https',
+                pageData.hasContactInfo ? 'contact present' : 'contact missing',
+                pageData.hasPolicies ? 'policies present' : 'policies missing',
+                `domain age ${pageData.domainAge ?? 'unknown'}`,
+                `social ${pageData.socialMedia?.count ?? 0}`,
+                pageData.domainRegistrar || 'registrar unknown'
+            ].join(' ');
+            const qv = embedTextLocal(legitimacySignals);
+            const retrieved = await VectorService.search(qv, { topK: 3, threshold: 0.3 });
+            const contextLines = retrieved.map(r => `- ${r.it.meta.kind}: ${r.it.meta.label} — ${r.it.meta.notes}`);
+
+            const prompt = `Evaluate legitimacy using retrieved cases.
+Context:
+${contextLines.join('\n')}
+
+Evaluate the legitimacy of this e-commerce website:
+
+URL: ${pageData.url}
+Title: ${pageData.title}
+
+🔒 Security:
+- HTTPS: ${pageData.hasHTTPS ? 'Yes' : 'No'}
+- Contact Info: ${pageData.hasContactInfo ? 'Found' : 'Missing'}
+- Policies: ${pageData.hasPolicies ? 'Present' : 'Absent'}
+
+🌐 Domain Intelligence:
+${domainInfo}
+
+📱 ${socialInfo}
+
+📄 Content Sample: ${pageData.content.slice(0, 400)}
+
+⭐ CRITICAL CONTEXT-AWARE RULES:
 
 Security: HTTPS=${pageData.hasHTTPS}, Contact=${pageData.hasContactInfo}, Policies=${pageData.hasPolicies}
 Domain: ${domainInfo}
@@ -302,13 +441,13 @@ JSON only, no markdown.`;
             const response = await this.session.prompt(prompt);
             console.log('🤖 AI Legitimacy Analysis:', response);
 
-            const concerns = this.parseAIResponse(response);
+            const concerns: AIResponse = this.parseAIResponse(response);
 
             // Sort by score (highest first) to prioritize major issues
-            const sortedConcerns = concerns.sort((a: any, b: any) => (b.score || 0) - (a.score || 0));
+            const sortedConcerns = (concerns as AILegitimacySignal[]).sort((a, b) => (b.score || 0) - (a.score || 0));
 
             // Limit to top 5 concerns to prevent token overflow
-            return sortedConcerns.slice(0, 5).map((concern: any, index: number) => ({
+            return sortedConcerns.slice(0, 5).map((concern, index: number) => ({
                 id: `ai-legit-${index + 1}`,
                 score: concern.score,
                 reason: concern.reason,
@@ -326,7 +465,7 @@ JSON only, no markdown.`;
     /**
      * Parse AI response (handle both JSON and text responses)
      */
-    private static parseAIResponse(response: string): any {
+    private static parseAIResponse(response: string): AIResponse {
         try {
             // Remove markdown code blocks if present
             let cleaned = response.trim();

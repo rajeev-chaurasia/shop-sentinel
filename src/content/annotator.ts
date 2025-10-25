@@ -88,10 +88,11 @@ function createHighlight(
     // Create tooltip
     const tooltip = document.createElement('div');
     tooltip.className = 'shop-sentinel-tooltip';
+    const explanation = (annotation as any).explanation || annotation.reason;
     tooltip.innerHTML = `
       <span style="font-size: 16px; margin-right: 6px;">${styles.icon}</span>
       <strong style="text-transform: uppercase; font-size: 10px; letter-spacing: 0.5px;">${annotation.severity} Risk</strong>
-      <div style="margin-top: 4px; font-size: 12px;">${annotation.reason}</div>
+      <div style="margin-top: 4px; font-size: 12px;">${explanation}</div>
     `;
     tooltip.style.cssText = `
       position: absolute;

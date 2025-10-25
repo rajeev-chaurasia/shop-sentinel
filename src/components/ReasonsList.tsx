@@ -90,7 +90,7 @@ export function ReasonsList({
 
   return (
     <div className={className}>
-      <div className={`space-y-${compact ? '2' : '3'}`}>
+      <div className={compact ? 'space-y-2' : 'space-y-3'}>
         {sortedSignals.map((signal, index) => {
           const styles = severityStyles[signal.severity];
           
@@ -133,13 +133,13 @@ export function ReasonsList({
               </div>
 
               {/* Reason */}
-              <p className={`font-semibold ${compact ? 'text-sm' : 'text-base'} mb-1 leading-snug`}>
+              <p className={`font-semibold ${compact ? 'text-sm' : 'text-base'} mb-1 leading-snug break-any`}>
                 {signal.reason}
               </p>
 
               {/* Details */}
               {signal.details && !compact && (
-                <p className="text-xs opacity-80 leading-relaxed mt-2 pl-7">
+                <p className="text-xs opacity-80 leading-relaxed mt-2 pl-7 break-any truncate-2">
                   {signal.details}
                 </p>
               )}

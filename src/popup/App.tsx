@@ -79,7 +79,6 @@ function App() {
             // Update icon badge for cached results
             updateIconForCachedResult(cached);
             completeAnalysis();
-            setIsFromCache(true);
             clearInterval(interval);
             setPollInterval(null);
           }
@@ -111,21 +110,13 @@ function App() {
     const handleStorageChange = async (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
       if (areaName !== 'local') return;
       
-      // Debounce rapid storage changes to prevent race conditions
+      // Debounce the update
       if (updateTimeout) {
         clearTimeout(updateTimeout);
       }
       
       updateTimeout = setTimeout(async () => {
-        // Guard against concurrent updates
-        if (isUpdating) {
-          console.log('⏸️ Update already in progress, skipping storage change');
-          return;
-        }
-        
         try {
-          setIsUpdating(true);
-          
           const tab = await MessagingService.getActiveTab();
           if (!tab?.url) return;
           
@@ -133,35 +124,36 @@ function App() {
           if (!pageInfoResponse.success || !pageInfoResponse.data) return;
           
           const pageType = pageInfoResponse.data.pageType || 'other';
-          const cacheKey = `analysis_${new URL(tab.url).hostname.replace(/^www\./, '')}:${pageType}`;
-          
-          // Check if analysis completed in another tab
-          if (changes[cacheKey] && changes[cacheKey].newValue) {
-            console.log('📡 Analysis completed, updating UI...');
-            const cached = changes[cacheKey].newValue as any;
-            
-            if (cached.result && !cached.expiresAt) {
-              if (isValidAnalysisResult(cached)) {
+          const domain = new URL(tab.url).hostname.replace(/^www\./, '');
+          const prefix = `analysis_${domain}:${pageType}`; // may include :path suffix
+
+          // Find any changed key for this domain+pageType (path-scoped or not)
+          const relevantKey = Object.keys(changes).find(k => k.startsWith(prefix));
+          if (relevantKey) {
+            const change = changes[relevantKey];
+            if (change && change.newValue) {
+              console.log('📡 Analysis updated via storage change:', relevantKey);
+              const cached = change.newValue as any;
+              
+              // Handle new format: { result, expiresAt }
+              if (cached.result && cached.expiresAt && Date.now() < cached.expiresAt) {
+                if (isValidAnalysisResult(cached.result)) {
+                  setAnalysisResult(cached.result);
+                  setIsFromCache(true);
+                  // Update icon badge for cached results
+                  updateIconForCachedResult(cached.result);
+                  if (isLoading) completeAnalysis();
+                }
+              }
+              // Legacy support: direct result object (shouldn't happen with new storage format)
+              else if (isValidAnalysisResult(cached)) {
                 setAnalysisResult(cached);
+                setIsFromCache(true);
                 // Update icon badge for cached results
                 updateIconForCachedResult(cached);
                 if (isLoading) completeAnalysis();
               }
-            } else if (cached.result && Date.now() < cached.expiresAt) {
-              if (isValidAnalysisResult(cached.result)) {
-                setAnalysisResult(cached.result);
-                // Update icon badge for cached results
-                updateIconForCachedResult(cached.result);
-                if (isLoading) completeAnalysis();
-              }
             }
-            
-            setIsFromCache(true);
-            if (isLoading) {
-              completeAnalysis();
-            }
-            
-            console.log('✅ UI updated successfully');
           }
         } catch (error) {
           console.error('Error handling storage change:', error);
@@ -230,14 +222,65 @@ function App() {
       if (cached && isValidAnalysisResult(cached)) {
         console.log(`✅ Cache hit for ${pageType}:`, cached);
         setAnalysisResult(cached);
-        // Update icon badge for cached results
-        updateIconForCachedResult(cached);
         setIsFromCache(true);
       } else {
         console.log(`❌ No cache found for ${pageType} - ready to analyze`);
+        setIsFromCache(false);
       }
     } catch (error) {
       console.error('Failed to load cache:', error);
+    }
+  };
+
+  // New: Intelligent Scan (cache-first, then analyze)
+  const handleSmartScan = async () => {
+    try {
+      const tab = await MessagingService.getActiveTab();
+      if (!tab?.url) {
+        setError('No active tab found');
+        return;
+      }
+
+      // Ask content script for page type first
+      const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+      if (!pageInfoResponse.success || !pageInfoResponse.data) {
+        // Fallback to full analyze if page info fails
+        await handleAnalyze(false);
+        return;
+      }
+
+      const pageType = pageInfoResponse.data.pageType || 'other';
+
+      // Try cache for this specific page type (domain:pageType:path)
+      const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
+      if (cached) {
+        // Immediate UI update from cache
+        setAnalysisResult(cached);
+        completeAnalysis();
+        return;
+      }
+
+      // Cache miss → try delta mode if we have any cached analysis for this domain
+      const latestForDomain = await StorageService.getLatestDomainAnalysis(tab.url, pageType);
+      if (latestForDomain && new URL(latestForDomain.url).hostname.replace(/^www\./,'') === new URL(tab.url).hostname.replace(/^www\./,'')) {
+        // Ask content script to run fast delta analysis (reuse domain/contact/security)
+        startAnalysis(tab.url);
+        const response = await MessagingService.sendToActiveTab<any, AnalysisResult>(
+          'ANALYZE_PAGE',
+          { url: tab.url, includeAI: useAI, delta: true }
+        );
+        if (response.success && response.data) {
+          setAnalysisResult(response.data);
+          completeAnalysis();
+          // Cache is saved in content script
+          return;
+        }
+      }
+
+      // Fallback: full analysis
+      await handleAnalyze(false);
+    } catch (error) {
+      setError(error instanceof Error ? error.message : 'Scan failed');
     }
   };
 
@@ -250,6 +293,7 @@ function App() {
     
     try {
       setIsUpdating(true);
+      setIsFromCache(false); // Reset cache flag for fresh analysis
       
       const tab = await MessagingService.getActiveTab();
       if (!tab?.url) {
@@ -260,7 +304,6 @@ function App() {
       // If forcing refresh, clear cache first
       if (force) {
         await StorageService.clearCachedAnalysis(tab.url);
-        setIsFromCache(false);
       }
 
       startAnalysis(tab.url);
@@ -281,11 +324,9 @@ function App() {
         
         // Cache the result with pageType from the analysis
         const pageType = response.data.pageType || 'other';
-        if (isValidAnalysisResult(response.data)) {
-          const cached = await StorageService.cacheAnalysis(tab.url, pageType, response.data);
-          console.log('💾 Cache saved:', cached);
-        }
-        setIsFromCache(false);
+        const cached = await StorageService.cacheAnalysis(tab.url, pageType, response.data);
+        console.log('💾 Cache saved:', cached);
+        
       } else {
         setError(response.error || 'Analysis failed');
       }
@@ -392,13 +433,18 @@ function App() {
                   </p>
                 )}
                 
-                <button onClick={() => handleAnalyze(false)} disabled={isLoading} className="w-full max-w-xs mx-auto bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-bold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:scale-105 disabled:transform-none disabled:opacity-50">
+                <button onClick={() => handleSmartScan()} disabled={isLoading} className="w-full max-w-xs mx-auto bg-gradient-to-r from-blue-500 to-purple-600 hover:from-blue-600 hover:to-purple-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-bold py-4 px-6 rounded-xl transition-all duration-200 shadow-lg hover:shadow-xl transform hover:scale-105 disabled:transform-none disabled:opacity-50">
                   {isLoading ? (
                     <span className="flex items-center justify-center gap-2">
                       <span className="animate-spin">⚙️</span>
                       <span>Analyzing...</span>
                     </span>
-                  ) : ('🔍 Analyze This Page')}
+                  ) : (
+                    <span className="flex items-center justify-center gap-2">
+                      <span>🔍</span>
+                      <span>{analysisResult ? 'Re-scan Page' : 'Scan Page'}</span>
+                    </span>
+                  )}
                 </button>
               </div>
             </div>
@@ -442,25 +488,17 @@ function App() {
                 <div className="flex items-center justify-between mb-3">
                   {isFromCache && (
                     <div className="flex items-center gap-2 text-xs text-gray-600 bg-blue-50 px-3 py-1.5 rounded-lg">
-                      <span>📦</span>
-                      <span>Cached result</span>
+                      <span>⚡</span>
+                      <span>Previously analyzed</span>
                     </div>
                   )}
-                  <button 
-                    onClick={() => handleAnalyze(true)} 
-                    disabled={isLoading}
-                    className="ml-auto text-xs text-blue-600 hover:text-blue-700 disabled:text-gray-400 flex items-center gap-1 px-3 py-1.5 rounded-lg hover:bg-blue-50 transition-colors"
-                    title="Run fresh analysis"
-                  >
-                    <span className={isLoading ? 'animate-spin' : ''}>🔄</span>
-                    <span>Refresh</span>
-                  </button>
+                  {/* Removed manual refresh; smart button handles cache vs analyze */}
                 </div>
                 <div className="flex gap-1 bg-gray-100 rounded-xl p-1.5 shadow-inner">
                   <button onClick={() => setActiveTab('overview')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 ${activeTab === 'overview' ? 'bg-white text-blue-600 shadow-md transform scale-105' : 'text-gray-600 hover:text-gray-900 hover:bg-white hover:bg-opacity-50'}`}>
                     Overview
                   </button>
-                  <button onClick={() => setActiveTab('reasons')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 relative ${activeTab === 'reasons' ? 'bg-white text-blue-600 shadow-md transform scale-105' : 'text-gray-600 hover:text-gray-900 hover:bg-white hover:bg-opacity-50'}`}>
+                    <button onClick={() => setActiveTab('reasons')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 relative ${activeTab === 'reasons' ? 'bg-white text-blue-600 shadow-md transform scale-105' : 'text-gray-600 hover:text-gray-900 hover:bg-white hover:bg-opacity-50'}`}>
                     Issues
                     {(analysisResult.allSignals?.length ?? 0) > 0 && (
                       <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold ${activeTab === 'reasons' ? 'bg-blue-100 text-blue-700' : 'bg-gray-200 text-gray-700'}`}>

@@ -148,24 +148,26 @@ export function PolicySummary({
                     )}
                   </div>
                   
-                  {/* AI Summary if available */}
-                  {summary && (
-                    <div className="mt-3 pl-13 pt-3 border-t border-green-200">
-                      <div className="text-xs text-green-800 space-y-1.5">
-                        {summary.summary.slice(0, 2).map((point, idx) => (
-                          <div key={idx} className="flex gap-2">
-                            <span className="text-green-600 flex-shrink-0">•</span>
-                            <span className="flex-1">{point}</span>
-                          </div>
-                        ))}
-                        {summary.keyPoints.returnWindow && (
-                          <div className="mt-2 px-3 py-1.5 bg-white bg-opacity-60 rounded-lg font-semibold">
-                            ⏱️ Window: {summary.keyPoints.returnWindow}
-                          </div>
-                        )}
-                      </div>
+                  {/* AI Summary if available; otherwise a human-friendly helper */}
+                  <div className="mt-3 pl-13 pt-3 border-t border-green-200">
+                    <div className="text-xs text-green-800 space-y-1.5">
+                      {summary ? (
+                        <>
+                          {summary.summary.slice(0, 2).map((point, idx) => (
+                            <div key={idx} className="flex gap-2">
+                              <span className="text-green-600 flex-shrink-0">•</span>
+                              <span className="flex-1">{point}</span>
+                            </div>
+                          ))}
+                          {summary.keyPoints.returnWindow && (
+                            <div className="mt-2 px-3 py-1.5 bg-white bg-opacity-60 rounded-lg font-semibold">
+                              ⏱️ Window: {summary.keyPoints.returnWindow}
+                            </div>
+                          )}
+                        </>
+                      ) : null}
                     </div>
-                  )}
+                  </div>
                 </div>
               );
             })}
