@@ -1206,7 +1206,15 @@ class BackgroundTaskManager {
 }
 
 // Initialize background tasks
-function initializeBackgroundTasks(): void {
+async function initializeBackgroundTasks(): Promise<void> {
+  // Import cleanup function dynamically to avoid ES6 import issues in service worker
+  try {
+    const { cleanupStorageOnStartup } = await import('./services/cleanup');
+    await cleanupStorageOnStartup();
+  } catch (error) {
+    console.warn('⚠️ Could not run storage cleanup:', error);
+  }
+  
   BackgroundTaskManager.getInstance().initialize();
 }
 

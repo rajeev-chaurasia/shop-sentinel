@@ -1125,9 +1125,8 @@ function App() {
                             signals: [] 
                           },
                           policies: { 
-                            hasReturnPolicy: false, 
+                            hasReturnRefundPolicy: false, 
                             hasShippingPolicy: false, 
-                            hasRefundPolicy: false, 
                             hasTermsOfService: false, 
                             hasPrivacyPolicy: false, 
                             policyUrls: {}, 
