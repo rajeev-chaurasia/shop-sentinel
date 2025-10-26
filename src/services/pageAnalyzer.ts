@@ -54,6 +54,7 @@ export class PageAnalyzer {
     url: string,
     options: {
       includeAI?: boolean;
+      includeWhois?: boolean;
       forceRefresh?: boolean;
       timeout?: number;
     } = {}
@@ -85,7 +86,7 @@ export class PageAnalyzer {
       await StorageService.setAnalysisInProgress(url, pageTypeResult.type, options.includeAI !== false);
 
       // Phase 3: Parallel Heuristic Analysis
-      const heuristicResults = await this.runHeuristicAnalysis();
+      const heuristicResults = await this.runHeuristicAnalysis(options.includeWhois);
       
       // Phase 4: AI Analysis (if enabled and applicable)
       const aiResults = await this.runAIAnalysis(pageTypeResult, heuristicResults, options.includeAI);
@@ -356,12 +357,12 @@ export class PageAnalyzer {
   /**
    * Run all heuristic checks in parallel for optimal performance
    */
-  private async runHeuristicAnalysis() {
+  private async runHeuristicAnalysis(includeWhois: boolean = false) {
     console.log('🔍 Running parallel heuristic analysis...');
     
     try {
       const [domainSecurityResults, contentPolicyResults] = await Promise.all([
-        runDomainSecurityChecks(),
+        runDomainSecurityChecks(includeWhois),
         runContentPolicyChecks()
       ]);
       

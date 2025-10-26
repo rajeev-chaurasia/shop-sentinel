@@ -317,7 +317,7 @@ async function handleAnalyzePage(payload: any) {
       { security, domain, payment },
       { contact, policies }
     ] = await Promise.all([
-      runDomainSecurityChecks(),
+      runDomainSecurityChecks(payload?.includeWhois),
       runContentPolicyChecks()
     ]);
 

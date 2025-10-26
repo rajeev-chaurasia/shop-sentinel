@@ -65,11 +65,11 @@ export function RiskMeter({
   };
 
   const bgColors = {
-    safe: 'bg-green-50',
-    low: 'bg-yellow-50',
-    medium: 'bg-orange-50',
-    high: 'bg-red-50',
-    critical: 'bg-red-100',
+    safe: 'bg-green-50 dark:bg-slate-700',
+    low: 'bg-yellow-50 dark:bg-slate-700',
+    medium: 'bg-orange-50 dark:bg-slate-700',
+    high: 'bg-red-50 dark:bg-slate-700',
+    critical: 'bg-red-100 dark:bg-slate-700',
   };
 
   return (
@@ -92,9 +92,9 @@ export function RiskMeter({
             cx="50"
             cy="50"
             r={radius}
+            className="fill-white dark:fill-gray-800"
             stroke="#e5e7eb"
             strokeWidth={strokeWidth}
-            fill="white"
           />
           {/* Progress circle */}
           <circle
@@ -121,7 +121,7 @@ export function RiskMeter({
           >
             {score}
           </span>
-          <span className="text-xs text-gray-500 mt-1 font-semibold">/ 100</span>
+          <span className="text-xs text-gray-500 dark:text-gray-400 mt-1 font-semibold">/ 100</span>
         </div>
       </div>
 
@@ -135,7 +135,7 @@ export function RiskMeter({
             <span className="text-2xl">{levelEmoji[level]}</span>
             <span>{levelText[level]}</span>
           </div>
-          <div className={`text-gray-500 ${labelSizeClasses[size]} font-semibold uppercase tracking-wide`}>
+          <div className={`text-gray-500 dark:text-gray-400 ${labelSizeClasses[size]} font-semibold uppercase tracking-wide`}>
             Risk Assessment
           </div>
         </div>

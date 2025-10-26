@@ -376,7 +376,7 @@ Domain Protection: ${pageData.domainStatus?.length || 0} status flags${
         ? ` (${pageData.domainStatus.slice(0, 3).join(', ')})`
         : ''
 }`
-                : 'Domain Age: Unknown';
+                : '⚠️ DOMAIN AGE UNKNOWN - Exercise extra caution! Unable to verify domain registration details. This could indicate a new or suspicious domain.';
 
             const socialInfo = pageData.socialMedia
                 ? `Social Media Links Found:
@@ -420,6 +420,8 @@ ${domainInfo}
 📱 ${socialInfo}
 
 📄 Content Sample: ${pageData.content.slice(0, 400)}
+
+⚠️ VIGILANCE PROTOCOL: If domain age is unknown, significantly increase scrutiny of ALL other factors. Missing domain data often indicates new/suspicious domains that require extra verification.
 
 ⭐ CRITICAL CONTEXT-AWARE RULES:
 

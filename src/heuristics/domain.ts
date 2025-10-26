@@ -6,9 +6,7 @@ import {
 } from '../types/analysis';
 
 // Configuration
-const WHOIS_API_KEY = 'MOCK_API_KEY_FOR_DEV_ONLY';
-const WHOIS_API_BASE_URL = 'https://api.apilayer.com/whois/query';
-const USE_MOCK_WHOIS = true; // Using real API
+const PROXY_BACKEND_URL = 'http://localhost:3001'; // Change this to your deployed backend URL
 const DOMAIN_AGE_THRESHOLD_DAYS = 180;
 
 // Scoring values
@@ -140,51 +138,49 @@ export function checkMixedContent(): { hasMixedContent: boolean; signal?: RiskSi
 /**
  * Check domain age using WHOIS API
  */
-export async function checkDomainAge(domain: string): Promise<Partial<DomainAnalysis>> {
+export async function checkDomainAge(domain: string, includeWhois: boolean = false): Promise<Partial<DomainAnalysis>> {
   try {
     // Strip www. prefix for WHOIS lookup
     const cleanDomain = domain.replace(/^www\./i, '');
     
     let whoisData;
 
-    if (USE_MOCK_WHOIS) {
-      // Use mock data for development
-      console.log('🔧 Using mock WHOIS data for:', cleanDomain);
+    if (!includeWhois) {
+      // Use mock data when WHOIS verification is disabled
+      console.log('🔧 WHOIS verification disabled, using mock data for:', cleanDomain);
       whoisData = MOCK_WHOIS_RESPONSES[cleanDomain] || MOCK_WHOIS_RESPONSES['example.com'];
       // Simulate API delay
       await new Promise(resolve => setTimeout(resolve, 100));
     } else {
-      // Real API call using apilayer.com WHOIS API
-      console.log('🌐 Fetching real WHOIS data for:', cleanDomain);
-      
+      // Call proxy backend server
+      console.log('🌐 Fetching WHOIS data via proxy for:', cleanDomain);
+
       const response = await fetch(
-        `${WHOIS_API_BASE_URL}?domain=${cleanDomain}`,
+        `${PROXY_BACKEND_URL}/api/whois/${cleanDomain}`,
         {
           method: 'GET',
-          redirect: 'follow',
           headers: {
-            'apikey': WHOIS_API_KEY,
+            'Content-Type': 'application/json',
           },
         }
       );
 
       if (!response.ok) {
-        throw new Error(`WHOIS API error: ${response.status} ${response.statusText}`);
+        throw new Error(`Proxy server error: ${response.status} ${response.statusText}`);
       }
 
-      const data = await response.json();
-      
-      // Check if API returned an error or no result
-      if (!data.result) {
-        throw new Error('No result found in WHOIS response');
+      const proxyResponse = await response.json();
+
+      if (!proxyResponse.success) {
+        throw new Error(proxyResponse.error || 'Proxy server returned an error');
       }
 
-      const result = data.result;
+      whoisData = proxyResponse.data;
       
-      console.log('📥 Raw WHOIS response:', result);
+      console.log('📥 WHOIS data from proxy:', whoisData);
 
-      // Parse the creation_date (format from API: "1997-09-15 04:00:00")
-      const createdDate = result.creation_date;
+      // Parse the creation_date from proxy response
+      const createdDate = whoisData.creation_date;
       
       if (!createdDate) {
         console.warn('⚠️ No creation date found in WHOIS data for:', cleanDomain);
@@ -192,7 +188,7 @@ export async function checkDomainAge(domain: string): Promise<Partial<DomainAnal
         return {
           domain,
           ageInDays: null,
-          registrar: result.registrar || null,
+          registrar: whoisData.registrar || null,
           isSuspicious: false,
           signals: [{
             id: 'no-creation-date',
@@ -204,13 +200,13 @@ export async function checkDomainAge(domain: string): Promise<Partial<DomainAnal
             details: 'WHOIS data incomplete - this is not necessarily suspicious',
           }],
           creationDate: null,
-          expirationDate: result.expiration_date || null,
-          updatedDate: result.updated_date || null,
-          dnssec: result.dnssec || null,
-          nameServers: result.name_servers || null,
-          registrantEmail: result.emails || null,
-          status: result.status || null,
-          whoisServer: result.whois_server || null,
+          expirationDate: whoisData.expiration_date || null,
+          updatedDate: whoisData.updated_date || null,
+          dnssec: whoisData.dnssec || null,
+          nameServers: whoisData.name_servers || null,
+          registrantEmail: whoisData.emails || null,
+          status: whoisData.status || null,
+          whoisServer: whoisData.whois_server || null,
         };
       }
 
@@ -230,21 +226,21 @@ export async function checkDomainAge(domain: string): Promise<Partial<DomainAnal
       // Extract all important fields from WHOIS response
       whoisData = {
         createdDate,
-        registrar: result.registrar || null,
+        registrar: whoisData.registrar || null,
         ageInDays,
         ageInYears,
-        dnssec: result.dnssec || null,
-        expirationDate: result.expiration_date || null,
-        updatedDate: result.updated_date || null,
-        emails: result.emails || null,
-        nameServers: result.name_servers || null,
-        status: result.status || null, // Important: clientDeleteProhibited, etc.
-        whoisServer: result.whois_server || null,
-        domainName: result.domain_name || null,
+        dnssec: whoisData.dnssec || null,
+        expirationDate: whoisData.expiration_date || null,
+        updatedDate: whoisData.updated_date || null,
+        emails: whoisData.emails || null,
+        nameServers: whoisData.name_servers || null,
+        status: whoisData.status || null, // Important: clientDeleteProhibited, etc.
+        whoisServer: whoisData.whois_server || null,
+        domainName: whoisData.domain_name || null,
       };
 
       console.log('📊 WHOIS data retrieved:', {
-        domain: result.domain_name || cleanDomain,
+        domain: whoisData.domainName || cleanDomain,
         age: `${ageInDays} days (${ageInYears} years)`,
         created: new Date(createdDate).toLocaleDateString(),
         updated: whoisData.updatedDate ? new Date(whoisData.updatedDate).toLocaleDateString() : 'Unknown',
@@ -570,7 +566,7 @@ export function checkPaymentMethods(): PaymentAnalysis {
 /**
  * Run all domain and security checks
  */
-export async function runDomainSecurityChecks(): Promise<{
+export async function runDomainSecurityChecks(includeWhois: boolean = false): Promise<{
   security: SecurityAnalysis;
   domain: DomainAnalysis;
   payment: PaymentAnalysis;
@@ -590,20 +586,35 @@ export async function runDomainSecurityChecks(): Promise<{
     }
   }
 
-  // 2. Domain checks (async for WHOIS)
-  const domainAgeResult = await checkDomainAge(currentDomain);
-  const urlCheckResult = checkSuspiciousURL(currentDomain);
+  // 2. Domain checks (only if WHOIS verification is enabled)
+  let domainResult: DomainAnalysis;
+  if (includeWhois) {
+    console.log('🛡️ Domain Trust Check enabled - running WHOIS verification');
+    const domainAgeResult = await checkDomainAge(currentDomain, includeWhois);
+    const urlCheckResult = checkSuspiciousURL(currentDomain);
 
-  const domainResult: DomainAnalysis = {
-    domain: currentDomain,
-    ageInDays: domainAgeResult.ageInDays || null,
-    registrar: domainAgeResult.registrar || null,
-    isSuspicious: urlCheckResult.isSuspicious || (domainAgeResult.isSuspicious || false),
-    signals: [
-      ...(domainAgeResult.signals || []),
-      ...(urlCheckResult.signal ? [urlCheckResult.signal] : []),
-    ],
-  };
+    domainResult = {
+      domain: currentDomain,
+      ageInDays: domainAgeResult.ageInDays || null,
+      registrar: domainAgeResult.registrar || null,
+      isSuspicious: urlCheckResult.isSuspicious || (domainAgeResult.isSuspicious || false),
+      signals: [
+        ...(domainAgeResult.signals || []),
+        ...(urlCheckResult.signal ? [urlCheckResult.signal] : []),
+      ],
+    };
+  } else {
+    console.log('🚫 Domain Trust Check disabled - skipping WHOIS analysis');
+    // Return minimal domain analysis when disabled (only URL pattern checks)
+    const urlCheckResult = checkSuspiciousURL(currentDomain);
+    domainResult = {
+      domain: currentDomain,
+      ageInDays: null,
+      registrar: null,
+      isSuspicious: urlCheckResult.isSuspicious,
+      signals: urlCheckResult.signal ? [urlCheckResult.signal] : [],
+    };
+  }
 
   // 3. Payment method checks
   const paymentResult = checkPaymentMethods();
