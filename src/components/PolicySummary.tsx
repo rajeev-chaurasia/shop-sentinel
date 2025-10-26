@@ -14,17 +14,15 @@ export function PolicySummary({
   className = '' 
 }: PolicySummaryProps) {
   const policyTypes = [
-    { key: 'returns', label: 'Return Policy', icon: '↩️', urlKey: 'returns' as const },
+    { key: 'returnRefund', label: 'Return/Refund Policy', icon: '↩️', urlKey: 'returnRefund' as const },
     { key: 'shipping', label: 'Shipping Policy', icon: '📦', urlKey: 'shipping' as const },
-    { key: 'refund', label: 'Refund Policy', icon: '💰', urlKey: 'refund' as const },
     { key: 'terms', label: 'Terms of Service', icon: '📋', urlKey: 'terms' as const },
     { key: 'privacy', label: 'Privacy Policy', icon: '🔒', urlKey: 'privacy' as const },
   ];
 
   const hasPolicy = (key: string) => {
-    if (key === 'returns') return policies.hasReturnPolicy;
+    if (key === 'returnRefund') return policies.hasReturnRefundPolicy;
     if (key === 'shipping') return policies.hasShippingPolicy;
-    if (key === 'refund') return policies.hasRefundPolicy;
     if (key === 'terms') return policies.hasTermsOfService;
     if (key === 'privacy') return policies.hasPrivacyPolicy;
     return false;
@@ -61,25 +59,24 @@ export function PolicySummary({
           />
         </div>
 
-        {/* Policy badges */}
-        <div className="flex flex-wrap gap-2">
+        {/* Policy badges - evenly distributed across width */}
+        <div className="grid grid-cols-4 gap-2">
           {policyTypes.map((policy) => {
             const exists = hasPolicy(policy.key);
             return (
               <div
                 key={policy.key}
                 className={`
-                  text-xs px-3 py-1.5 rounded-lg font-bold
-                  flex items-center gap-1.5 
-                  transition-all duration-200
+                  text-xs px-2 py-2 rounded-lg font-bold
+                  flex flex-col items-center justify-center gap-1
+                  transition-all duration-200 min-h-[2.5rem]
                   ${exists
                     ? 'bg-gradient-to-r from-green-100 to-emerald-100 dark:from-green-800 dark:to-emerald-700 text-green-900 dark:text-green-100 border-2 border-green-400 dark:border-green-600 shadow-sm'
-                    : 'bg-gray-100 dark:bg-gray-700 text-gray-500 dark:text-gray-400 border-2 border-gray-300 dark:border-gray-600'
+                    : 'bg-gradient-to-br from-red-100 to-rose-100 text-red-900 border-2 border-red-400 shadow-sm'
                   }
                 `}
               >
-                <span className="text-base">{policy.icon}</span>
-                <span>{exists ? '✓' : '✗'}</span>
+                <span className="text-sm">{policy.icon}</span>
               </div>
             );
           })}

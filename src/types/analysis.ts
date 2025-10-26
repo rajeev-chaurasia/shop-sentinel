@@ -66,15 +66,13 @@ export interface ContactAnalysis {
 }
 
 export interface PolicyAnalysis {
-  hasReturnPolicy: boolean;
+  hasReturnRefundPolicy: boolean; // Combined return/refund policy
   hasShippingPolicy: boolean;
-  hasRefundPolicy: boolean;
   hasTermsOfService: boolean;
   hasPrivacyPolicy: boolean;
   policyUrls: {
-    returns?: string;
+    returnRefund?: string; // Combined return/refund policy URL
     shipping?: string;
-    refund?: string;
     terms?: string;
     privacy?: string;
   };
@@ -136,7 +134,7 @@ export interface AnalysisResult {
 }
 
 export interface PolicySummary {
-  policyType: 'returns' | 'shipping' | 'refund' | 'terms';
+  policyType: 'returnRefund' | 'shipping' | 'terms'; // Updated to match new structure
   url: string;
   language: string;
   wasTranslated: boolean;

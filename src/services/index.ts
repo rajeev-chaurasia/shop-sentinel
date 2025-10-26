@@ -6,3 +6,4 @@ export { pageAnalyzer } from './pageAnalyzer';
 export { socialProofAuditService } from './socialProofAudit';
 export { cacheService } from './cache';
 export { crossTabSync } from './crossTabSync';
+export { cleanupStorageOnStartup } from './cleanup';

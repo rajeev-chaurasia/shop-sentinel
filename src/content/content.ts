@@ -452,7 +452,7 @@ async function handleAnalyzePage(payload: any) {
                 content: pageText.slice(0, 1500),
                 hasHTTPS: security.isHttps,
                 hasContactInfo: contact.hasContactPage || contact.hasEmail || contact.hasPhoneNumber,
-                hasPolicies: policies.hasReturnPolicy || policies.hasPrivacyPolicy,
+                hasPolicies: policies.hasReturnRefundPolicy || policies.hasPrivacyPolicy,
                 // Enhanced context: Social media intelligence
                 socialMedia: socialMediaData,
                 // Enhanced context: Domain intelligence from WHOIS

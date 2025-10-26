@@ -207,8 +207,214 @@ export function checkPolicyPages(): PolicyAnalysis {
       '/privacy', '/privacy-policy', '/privacypolicy', '/data-policy'
     ],
   };
+
+  // Universal inline text patterns for all e-commerce platforms
+  const inlineTextPatterns = {
+    returns: [
+      // Universal e-commerce return/refund patterns
+      'returns free', 'free returns', 'free return', 'return free',
+      'free 30-day', 'free 15-day', 'free 14-day', 'free 7-day',
+      'free 30 day', 'free 15 day', 'free 14 day', 'free 7 day',
+      '30-day return', '15-day return', '14-day return', '7-day return',
+      '30 day return', '15 day return', '14 day return', '7 day return',
+      'day return', 'day returns', 'day refund', 'day refunds',
+      'return window', 'return period', 'return policy',
+      'refund/replacement', 'refund replacement', 'replacement/refund',
+      'return or exchange', 'return and exchange', 'exchange or return',
+      // Generic patterns
+      'returnable', 'returnable item', 'item returnable',
+      'return accepted', 'returns accepted', 'return allowed',
+      'return within', 'returns within', 'refund within',
+      'money back', 'money-back', 'money back guarantee',
+      'satisfaction guarantee', 'satisfaction guaranteed',
+      'hassle free return', 'hassle-free return', 'easy return',
+      'no questions asked', 'no questions asked return',
+      // Additional universal variations
+      'returns', 'return', 'refund', 'refunds',
+      'free return shipping', 'return shipping free',
+      'return label', 'return labels', 'prepaid return',
+      // Common e-commerce phrases
+      'easy returns', 'simple returns', 'quick returns', 'fast returns',
+      'return policy', 'return information', 'return details',
+      'refund policy', 'refund information', 'refund details'
+    ],
+    shipping: [
+      'free shipping', 'free delivery', 'free ship',
+      'shipping included', 'delivery included', 'ship included',
+      'express shipping', 'express delivery', 'fast shipping',
+      'same day delivery', 'next day delivery', 'overnight delivery',
+      'shipping policy', 'delivery policy', 'shipping info',
+      'shipping rates', 'delivery rates', 'shipping cost',
+      'estimated delivery', 'delivery estimate', 'shipping estimate'
+    ],
+    refund: [
+      'full refund', 'complete refund', 'total refund',
+      'refund policy', 'refund process', 'refund procedure',
+      'money back', 'money-back', 'money back guarantee',
+      'refund within', 'refund in', 'refund available',
+      'refund accepted', 'refunds accepted', 'refund allowed',
+      'no questions asked', 'no questions asked refund',
+      'hassle free refund', 'hassle-free refund', 'easy refund'
+    ],
+    terms: [
+      'terms of service', 'terms & conditions', 'terms and conditions',
+      'terms of use', 'user agreement', 'service terms',
+      'website terms', 'site terms', 'legal terms',
+      'agreement', 'user agreement', 'service agreement'
+    ],
+    privacy: [
+      'privacy policy', 'privacy statement', 'data policy',
+      'privacy notice', 'privacy terms', 'data protection',
+      'privacy information', 'data privacy', 'personal data',
+      'cookie policy', 'cookie notice', 'tracking policy'
+    ]
+  };
+
+  // Enhanced helper: search body and nearby UI areas for inline policy phrases
+  function findInlinePolicyText(keywords: string[], bodyLow: string): boolean {
+    try {
+      // Full-body quick scan with flexible matching
+      for (const k of keywords) {
+        // Try exact word boundary match first
+        const exactRegex = new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+        if (exactRegex.test(bodyLow)) {
+          console.log(`✅ Found inline policy text in body (exact): "${k}"`);
+          return true;
+        }
+        
+        // Try flexible match for common variations (like "FREE Returns" vs "free returns")
+        const flexibleRegex = new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+        if (flexibleRegex.test(bodyLow)) {
+          console.log(`✅ Found inline policy text in body (flexible): "${k}"`);
+          return true;
+        }
+        
+        // Try substring match for very specific patterns (like "Returns FREE 30-day refund/replacement")
+        if (bodyLow.includes(k.toLowerCase())) {
+          console.log(`✅ Found inline policy text in body (substring): "${k}"`);
+          return true;
+        }
+      }
+
+      // Universal e-commerce selectors (works for Amazon, eBay, Shopify, WooCommerce, etc.)
+      const ecommerceSelectors = [
+        // Purchase and add-to-cart areas
+        '#add-to-cart', '#add-to-cart-button', 'input#add-to-cart-button', '[id*="add-to-cart"]',
+        'button[name="add"]', 'button.add-to-cart', 'button[class*="add-to-cart"]',
+        '.add-to-cart', '.add-to-basket', '.buy-now', '.purchase-button',
+        
+        // Product info and pricing areas
+        '.product-info', '.product-details', '.product-summary', '.product-meta',
+        '.price-container', '.pricing', '.product-price', '.price-box',
+        
+        // Seller and merchant information
+        '.seller-info', '.merchant-info', '.vendor-info', '.store-info',
+        '.shipping-info', '.delivery-info', '.return-info', '.policy-info',
+        
+        // Common e-commerce containers
+        '.product-page', '.product-container', '.product-wrapper', '.product-main',
+        '.checkout-info', '.purchase-info', '.order-info', '.cart-info',
+        
+        // Policy and terms areas
+        '.policy', '.policies', '.terms', '.conditions', '.return-policy',
+        '.shipping-policy', '.delivery-policy', '.refund-policy',
+        
+        // Generic content areas where policy info might appear
+        '.content', '.main-content', '.product-content', '.page-content',
+        '.sidebar', '.product-sidebar', '.info-panel', '.details-panel',
+        
+        // Quantity and options
+        '#quantity', '#quantity-select', '.quantity-selector', '.product-options',
+        '.variant-selector', '.option-selector', '.product-variants',
+        
+        // Gift and checkout options
+        '.gift-wrap', '.gift-options', '.checkout-options', '.purchase-options'
+      ];
+
+      const candidates: HTMLElement[] = [];
+      for (const sel of ecommerceSelectors) {
+        document.querySelectorAll(sel).forEach(el => {
+          if (el instanceof HTMLElement) candidates.push(el);
+        });
+      }
+
+      // Search in candidate elements and their nearby context (universal e-commerce approach)
+      for (const el of candidates) {
+        let node: HTMLElement | null = el;
+        for (let depth = 0; depth < 5 && node; depth++) {
+          const text = (node.innerText || '').toLowerCase();
+          for (const k of keywords) {
+            // Try multiple matching strategies
+            const exactRegex = new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+            const flexibleRegex = new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+            
+            if (exactRegex.test(text) || flexibleRegex.test(text) || text.includes(k.toLowerCase())) {
+              console.log(`✅ Found inline policy text near ${el.tagName} (depth ${depth}): "${k}"`);
+              return true;
+            }
+          }
+          
+          // Check siblings for policy information
+          const parent = node.parentElement;
+          if (parent) {
+            for (const s of Array.from(parent.children)) {
+              if (!(s instanceof HTMLElement)) continue;
+              const stext = (s.innerText || '').toLowerCase();
+              for (const k of keywords) {
+                const exactRegex = new RegExp(`\\b${k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+                const flexibleRegex = new RegExp(k.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+                
+                if (exactRegex.test(stext) || flexibleRegex.test(stext) || stext.includes(k.toLowerCase())) {
+                  console.log(`✅ Found inline policy text in sibling: "${k}"`);
+                  return true;
+                }
+              }
+            }
+          }
+          node = node.parentElement;
+        }
+      }
+    } catch (e) {
+      // swallow DOM errors and return false
+      console.warn('Error in findInlinePolicyText:', e);
+      return false;
+    }
+
+    return false;
+  }
   
-  const hasReturnPolicy = findPolicyLink(allLinks, policyKeywords.returns, policyUrls, 'returns');
+  // Check for policy links first
+  const hasReturnPolicyLink = findPolicyLink(allLinks, policyKeywords.returns, policyUrls, 'returnRefund');
+  const hasShippingPolicyLink = findPolicyLink(allLinks, policyKeywords.shipping, policyUrls, 'shipping');
+  const hasRefundPolicyLink = findPolicyLink(allLinks, policyKeywords.refund, policyUrls, 'returnRefund');
+  const hasTermsOfServiceLink = findPolicyLink(allLinks, policyKeywords.terms, policyUrls, 'terms');
+  const hasPrivacyPolicyLink = findPolicyLink(allLinks, policyKeywords.privacy, policyUrls, 'privacy');
+
+  // Check for inline policy text
+  console.log('🔍 Checking for inline policy text...');
+  console.log('📄 Body text sample:', bodyText.substring(0, 500));
+  
+  const hasReturnPolicyText = findInlinePolicyText(inlineTextPatterns.returns, bodyText);
+  const hasShippingPolicyText = findInlinePolicyText(inlineTextPatterns.shipping, bodyText);
+  const hasRefundPolicyText = findInlinePolicyText(inlineTextPatterns.refund, bodyText);
+  const hasTermsOfServiceText = findInlinePolicyText(inlineTextPatterns.terms, bodyText);
+  const hasPrivacyPolicyText = findInlinePolicyText(inlineTextPatterns.privacy, bodyText);
+  
+  console.log('📊 Policy detection results:', {
+    returnLink: hasReturnPolicyLink,
+    returnText: hasReturnPolicyText,
+    shippingLink: hasShippingPolicyLink,
+    shippingText: hasShippingPolicyText,
+    refundLink: hasRefundPolicyLink,
+    refundText: hasRefundPolicyText
+  });
+
+  // Combine return and refund policies into one
+  const hasReturnRefundPolicy = hasReturnPolicyLink || hasReturnPolicyText || hasRefundPolicyLink || hasRefundPolicyText;
+  const hasShippingPolicy = hasShippingPolicyLink || hasShippingPolicyText;
+  const hasTermsOfService = hasTermsOfServiceLink || hasTermsOfServiceText;
+  const hasPrivacyPolicy = hasPrivacyPolicyLink || hasPrivacyPolicyText;
+
   // Item-level override: if page explicitly states no returns, treat returns as NOT available for this item
   const noReturnPhrases = [
     'no returns applicable',
@@ -221,9 +427,9 @@ export function checkPolicyPages(): PolicyAnalysis {
   ];
   const itemSaysNoReturn = noReturnPhrases.some(p => bodyText.includes(p));
 
-  let effectiveHasReturnPolicy = hasReturnPolicy;
+  let effectiveHasReturnRefundPolicy = hasReturnRefundPolicy;
   if (itemSaysNoReturn) {
-    effectiveHasReturnPolicy = false;
+    effectiveHasReturnRefundPolicy = false;
     signals.push({
       id: 'item-no-returns',
       score: 12,
@@ -234,16 +440,11 @@ export function checkPolicyPages(): PolicyAnalysis {
       details: 'Detected phrases indicating no returns for this specific item.'
     });
   }
-  const hasShippingPolicy = findPolicyLink(allLinks, policyKeywords.shipping, policyUrls, 'shipping');
-  const hasRefundPolicy = findPolicyLink(allLinks, policyKeywords.refund, policyUrls, 'refund');
-  const hasTermsOfService = findPolicyLink(allLinks, policyKeywords.terms, policyUrls, 'terms');
-  const hasPrivacyPolicy = findPolicyLink(allLinks, policyKeywords.privacy, policyUrls, 'privacy');
   
   const missingPolicies: string[] = [];
   
-  if (!effectiveHasReturnPolicy) missingPolicies.push('return policy');
+  if (!effectiveHasReturnRefundPolicy) missingPolicies.push('return/refund policy');
   if (!hasShippingPolicy) missingPolicies.push('shipping policy');
-  if (!hasRefundPolicy) missingPolicies.push('refund policy');
   if (!hasTermsOfService) missingPolicies.push('terms of service');
   if (!hasPrivacyPolicy) missingPolicies.push('privacy policy');
   
@@ -284,14 +485,89 @@ export function checkPolicyPages(): PolicyAnalysis {
   }
   
   return {
-    hasReturnPolicy: effectiveHasReturnPolicy,
+    hasReturnRefundPolicy: effectiveHasReturnRefundPolicy,
     hasShippingPolicy,
-    hasRefundPolicy,
     hasTermsOfService,
     hasPrivacyPolicy,
     policyUrls,
     signals,
   };
+}
+
+
+/**
+ * Validate if a policy link is clickable and accessible
+ */
+function validatePolicyLink(link: Element, href: string): boolean {
+  try {
+    // Check if element is visible and clickable
+    const element = link as HTMLElement;
+    
+    // Check if element is hidden or disabled
+    if (element.style.display === 'none' || 
+        element.style.visibility === 'hidden' ||
+        element.hasAttribute('disabled') ||
+        element.getAttribute('aria-hidden') === 'true') {
+      return false;
+    }
+    
+    // Check if element has proper dimensions (not collapsed)
+    const rect = element.getBoundingClientRect();
+    if (rect.width === 0 || rect.height === 0) {
+      return false;
+    }
+    
+    // Check if href is valid and not a placeholder
+    if (!href || href === '#' || href === 'javascript:void(0)' || href === 'javascript:;') {
+      return false;
+    }
+    
+    // Check for common invalid patterns
+    const invalidPatterns = [
+      'javascript:', 'mailto:', 'tel:', 'sms:', 'ftp:',
+      'data:', 'blob:', 'about:', 'chrome:', 'moz-extension:'
+    ];
+    
+    if (invalidPatterns.some(pattern => href.toLowerCase().startsWith(pattern))) {
+      return false;
+    }
+    
+    // Check if link points to a valid domain (not external unless it's a known policy domain)
+    if (href.startsWith('http')) {
+      try {
+        const url = new URL(href);
+        const currentDomain = window.location.hostname;
+        
+        // Allow same domain or known policy domains
+        if (url.hostname !== currentDomain) {
+          const knownPolicyDomains = [
+            'amazon.com', 'amazon.co.uk', 'amazon.ca', 'amazon.de', 'amazon.fr',
+            'ebay.com', 'shopify.com', 'stripe.com', 'paypal.com',
+            'trustpilot.com', 'bbb.org', 'consumerreports.org'
+          ];
+          
+          if (!knownPolicyDomains.some(domain => url.hostname.includes(domain))) {
+            console.log(`⚠️ External policy link to unknown domain: ${url.hostname}`);
+            return false;
+          }
+        }
+      } catch (e) {
+        console.log(`⚠️ Invalid URL format: ${href}`);
+        return false;
+      }
+    }
+    
+    // Check if element is actually clickable (not just styled as a link)
+    const computedStyle = window.getComputedStyle(element);
+    if (computedStyle.pointerEvents === 'none') {
+      return false;
+    }
+    
+    return true;
+  } catch (e) {
+    console.warn('Error validating policy link:', e);
+    return false;
+  }
 }
 
 function findPolicyLink(
@@ -354,7 +630,7 @@ function findPolicyLink(
     if (href.includes('http') && !href.includes(window.location.hostname)) score -= 5; // External links
     
     // Avoid false positives like "no returns", "non-returnable", "final sale"
-    if (policyType === 'returns' || policyType === 'refund') {
+    if (policyType === 'returnRefund') {
       const negativePhrases = [
         'no return', 'no returns', 'non return', 'non-return', 'non returnable', 'non-returnable',
         'final sale', 'no exchange', 'no refund', 'non refundable', 'non-refundable'
@@ -364,6 +640,13 @@ function findPolicyLink(
       if (neg) {
         continue; // do not count negative statements as a policy page
       }
+    }
+
+    // Validate link accessibility and clickability
+    const isValidLink = validatePolicyLink(link, href);
+    if (!isValidLink) {
+      console.log(`⚠️ Skipping invalid policy link: "${text}" (${href})`);
+      continue;
     }
 
     // Keep track of the best match
@@ -378,6 +661,7 @@ function findPolicyLink(
       }
       
       bestMatch = { url: absoluteUrl, score };
+      console.log(`✅ Valid policy link found: "${text}" -> ${absoluteUrl} (score: ${score})`);
     }
   }
   
