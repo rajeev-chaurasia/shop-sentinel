@@ -8,7 +8,6 @@ export interface RiskSignal {
   category: 'security' | 'legitimacy' | 'dark-pattern' | 'policy';
   source: 'heuristic' | 'ai';
   details?: string;
-  // Pattern metadata for AI dark pattern signals
   pattern?: 'false_urgency' | 'forced_continuity' | 'hidden_costs' | 'trick_questions' | 'confirmshaming' | 'bait_switch' | 'social_proof_manipulation' | 'other';
   textSnippet?: string;
   elementType?: 'button' | 'timer' | 'form' | 'text' | 'image' | 'other';
@@ -28,14 +27,13 @@ export interface DomainAnalysis {
   registrar: string | null;
   isSuspicious: boolean;
   signals: RiskSignal[];
-  // Additional WHOIS data for AI context (from apilayer.com API)
   creationDate?: string | null;
   expirationDate?: string | null;
   updatedDate?: string | null;
   dnssec?: string | null;
   nameServers?: string[] | null;
   registrantEmail?: string | null;
-  status?: string[] | null; // Domain status codes (important for trust)
+  status?: string[] | null;
   whoisServer?: string | null;
 }
 
@@ -43,9 +41,9 @@ export interface SocialMediaProfile {
   platform: string;
   url: string;
   location: 'footer' | 'header' | 'body' | 'unknown';
-  isValid?: boolean; // Whether the URL was validated as accessible
-  validationError?: string; // Error message if validation failed
-  validatedAt?: number; // Timestamp of validation
+  isValid?: boolean;
+  validationError?: string;
+  validatedAt?: number;
 }
 
 export interface ContactAnalysis {
@@ -53,25 +51,25 @@ export interface ContactAnalysis {
   hasPhoneNumber: boolean;
   hasPhysicalAddress: boolean;
   hasEmail: boolean;
-  socialMediaLinks: string[]; // Kept for backward compatibility
-  socialMediaProfiles: SocialMediaProfile[]; // Enhanced structured data with validation
+  socialMediaLinks: string[];
+  socialMediaProfiles: SocialMediaProfile[];
   signals: RiskSignal[];
   socialProofAudit?: {
     totalProfiles: number;
     validProfiles: number;
     invalidProfiles: number;
-    validationRate: number; // Percentage of valid profiles
+    validationRate: number;
     lastValidatedAt: number;
   };
 }
 
 export interface PolicyAnalysis {
-  hasReturnRefundPolicy: boolean; // Combined return/refund policy
+  hasReturnRefundPolicy: boolean;
   hasShippingPolicy: boolean;
   hasTermsOfService: boolean;
   hasPrivacyPolicy: boolean;
   policyUrls: {
-    returnRefund?: string; // Combined return/refund policy URL
+    returnRefund?: string;
     shipping?: string;
     terms?: string;
     privacy?: string;
@@ -104,15 +102,15 @@ export interface AIAnalysis {
 
 export interface PageTypeResult {
   type: 'home' | 'product' | 'category' | 'checkout' | 'cart' | 'policy' | 'other';
-  confidence: number; // 0-100
-  signals: string[]; // What made us decide this
+  confidence: number;
+  signals: string[];
 }
 
 export interface AnalysisResult {
   url: string;
   timestamp: number;
-  pageType: string; // Page type detected (home, product, checkout, etc.)
-  pageTypeConfidence?: number; // Confidence in page type detection
+  pageType: string;
+  pageTypeConfidence?: number;
   security: SecurityAnalysis;
   domain: DomainAnalysis;
   contact: ContactAnalysis;
@@ -122,19 +120,19 @@ export interface AnalysisResult {
   totalRiskScore: number;
   riskLevel: RiskSeverity;
   allSignals: RiskSignal[];
-  riskBreakdown?: any; // Risk breakdown by category
-  topConcerns?: RiskSignal[]; // Top risk signals
+  riskBreakdown?: any;
+  topConcerns?: RiskSignal[];
   analysisVersion: string;
   isEcommerceSite: boolean;
   aiEnabled?: boolean;
   aiSignalsCount?: number;
-  elements?: AnnotationElement[]; // Elements to highlight for dark patterns
-  status?: 'success' | 'error' | 'in_progress'; // Analysis status
-  error?: string; // Error message if analysis failed
+  elements?: AnnotationElement[];
+  status?: 'success' | 'error' | 'in_progress';
+  error?: string;
 }
 
 export interface PolicySummary {
-  policyType: 'returnRefund' | 'shipping' | 'terms'; // Updated to match new structure
+  policyType: 'returnRefund' | 'shipping' | 'terms';
   url: string;
   language: string;
   wasTranslated: boolean;
@@ -170,8 +168,8 @@ export interface AnnotationElement {
   pattern: 'false_urgency' | 'forced_continuity' | 'hidden_costs' | 'trick_questions' | 'confirmshaming' | 'bait_switch' | 'social_proof_manipulation' | 'other';
   reason: string;
   severity: 'low' | 'medium' | 'high' | 'critical';
-  textSnippet?: string; // Text content that indicates the pattern
-  elementType?: 'button' | 'timer' | 'form' | 'text' | 'image' | 'other'; // Type of element to look for
-  context?: string; // Additional context about where to find the element
-  selector: string; // CSS selector to find the element for highlighting
+  textSnippet?: string;
+  elementType?: 'button' | 'timer' | 'form' | 'text' | 'image' | 'other';
+  context?: string;
+  selector: string;
 }
