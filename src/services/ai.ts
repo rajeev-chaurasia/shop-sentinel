@@ -104,6 +104,50 @@ declare global {
 export class AIService {
     private static session: AISession | null = null;
     private static isAvailable: boolean | null = null;
+    private static aiCache: Map<string, { result: any[], timestamp: number }> = new Map();
+    private static readonly CACHE_DURATION = 30 * 60 * 1000; // 30 minutes
+
+    /**
+     * Generate a content hash for caching AI results
+     */
+    private static generateContentHash(content: any): string {
+        const contentStr = JSON.stringify(content);
+        let hash = 0;
+        for (let i = 0; i < contentStr.length; i++) {
+            const char = contentStr.charCodeAt(i);
+            hash = ((hash << 5) - hash) + char;
+            hash = hash & hash; // Convert to 32-bit integer
+        }
+        return hash.toString();
+    }
+
+    /**
+     * Get cached AI result if available and not expired
+     */
+    private static getCachedResult(cacheKey: string): any[] | null {
+        const cached = this.aiCache.get(cacheKey);
+        if (cached && (Date.now() - cached.timestamp) < this.CACHE_DURATION) {
+            console.log('♻️ Using cached AI result for:', cacheKey);
+            return cached.result;
+        }
+        if (cached) {
+            this.aiCache.delete(cacheKey); // Remove expired cache
+        }
+        return null;
+    }
+
+    /**
+     * Cache AI result
+     */
+    private static setCachedResult(cacheKey: string, result: any[]): void {
+        this.aiCache.set(cacheKey, { result, timestamp: Date.now() });
+        if (this.aiCache.size > 50) {
+            const oldestKey = this.aiCache.keys().next().value;
+            if (oldestKey) {
+                this.aiCache.delete(oldestKey);
+            }
+        }
+    }
 
     /**
      * Check if Chrome's Built-in AI is available
@@ -250,6 +294,13 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
         forms: string[];
     }): Promise<RiskSignal[]> {
         try {
+            // Check cache first
+            const cacheKey = `dark_${this.generateContentHash(pageContent)}`;
+            const cachedResult = this.getCachedResult(cacheKey);
+            if (cachedResult) {
+                return cachedResult;
+            }
+
             // Seed lightweight local KB (no-op if already seeded)
             const { VectorService, embedTextLocal } = await import('./vector');
             await VectorService.seedIfEmpty();
@@ -318,7 +369,7 @@ No markdown code blocks, no explanations, JSON only.`;
             const sortedFindings = (findings as AIRiskSignal[]).sort((a, b) => (b.score || 0) - (a.score || 0));
 
             // Convert to RiskSignal format (limit to top 5)
-            return sortedFindings.slice(0, 5).map((finding, index: number) => ({
+            const result = sortedFindings.slice(0, 5).map((finding, index: number) => ({
                 id: `ai-dark-${index + 1}`,
                 score: finding.score,
                 reason: finding.reason,
@@ -327,6 +378,11 @@ No markdown code blocks, no explanations, JSON only.`;
                 source: 'ai' as const,
                 details: finding.details,
             }));
+
+            // Cache the result
+            this.setCachedResult(cacheKey, result);
+
+            return result;
         } catch (error) {
             console.error('❌ Error analyzing dark patterns:', error);
             return [];
@@ -359,6 +415,13 @@ No markdown code blocks, no explanations, JSON only.`;
         domainRegistrar?: string | null;
     }): Promise<RiskSignal[]> {
         try {
+            // Check cache first
+            const cacheKey = `legit_${this.generateContentHash(pageData)}`;
+            const cachedResult = this.getCachedResult(cacheKey);
+            if (cachedResult) {
+                return cachedResult;
+            }
+
             const { VectorService, embedTextLocal } = await import('./vector');
             await VectorService.seedIfEmpty();
             const initialized = await this.initializeSession();
@@ -449,7 +512,7 @@ JSON only, no markdown.`;
             const sortedConcerns = (concerns as AILegitimacySignal[]).sort((a, b) => (b.score || 0) - (a.score || 0));
 
             // Limit to top 5 concerns to prevent token overflow
-            return sortedConcerns.slice(0, 5).map((concern, index: number) => ({
+            const result = sortedConcerns.slice(0, 5).map((concern, index: number) => ({
                 id: `ai-legit-${index + 1}`,
                 score: concern.score,
                 reason: concern.reason,
@@ -458,6 +521,11 @@ JSON only, no markdown.`;
                 source: 'ai' as const,
                 details: concern.details,
             }));
+
+            // Cache the result
+            this.setCachedResult(cacheKey, result);
+
+            return result;
         } catch (error) {
             console.error('❌ Error analyzing legitimacy:', error);
             return [];

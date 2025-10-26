@@ -3,6 +3,7 @@ import { runDomainSecurityChecks } from '../heuristics/domain';
 import { runContentPolicyChecks } from '../heuristics/content';
 import { AIService } from '../services/ai';
 import { RiskCalculator } from '../services/riskCalculator';
+import { crossTabSync } from '../services/crossTabSync';
 import { displayAnnotations, clearAnnotations, MOCK_ANNOTATIONS } from './annotator';
 
 console.log('🛡️ Shop Sentinel content script loaded on:', window.location.href);
@@ -312,7 +313,41 @@ async function handleAnalyzePage(payload: any) {
     // Mark analysis as in progress with page context
     await StorageService.setAnalysisInProgress(window.location.href, pageType, payload?.includeAI !== false);
     
+    // Broadcast analysis start to other tabs
+    crossTabSync.broadcastAnalysisStart(window.location.href, pageType);
+    
+    // Helper function to send partial results progressively
+    const sendPartialResult = async (partialData: any, phase: string) => {
+      try {
+        const partialResult = {
+          ...partialData,
+          status: 'partial',
+          phase,
+          url: window.location.href,
+          timestamp: Date.now(),
+          pageType,
+          analysisVersion: '2.0.0',
+          isEcommerceSite: true,
+        };
+        
+        // Send partial result to popup via runtime message
+        chrome.runtime.sendMessage({
+          action: 'PARTIAL_ANALYSIS_RESULT',
+          payload: partialResult
+        }).catch(err => console.warn('Failed to send partial result:', err));
+        
+        console.log(`📊 Sent partial result for phase: ${phase}`);
+      } catch (error) {
+        console.warn(`⚠️ Failed to send partial result for ${phase}:`, error);
+      }
+    };
+    
+    // Check AI availability early for offline mode detection
+    const aiAvailable = await AIService.checkAvailability();
+    console.log(`🤖 AI Available: ${aiAvailable}`);
+    
     // Run heuristic checks in parallel for better performance
+    console.log('🔍 Running heuristic analysis...');
     const [
       { security, domain, payment },
       { contact, policies }
@@ -321,11 +356,33 @@ async function handleAnalyzePage(payload: any) {
       runContentPolicyChecks()
     ]);
 
+    // Send partial result after heuristic analysis
+    const heuristicSignals = [
+      ...security.signals,
+      ...domain.signals,
+      ...payment.signals,
+      ...contact.signals,
+      ...policies.signals,
+    ];
+    
+    const heuristicRiskAnalysis = RiskCalculator.calculateScore(heuristicSignals);
+    await sendPartialResult({
+      security,
+      domain,
+      contact,
+      policies,
+      payment,
+      totalRiskScore: heuristicRiskAnalysis.totalScore,
+      riskLevel: heuristicRiskAnalysis.riskLevel,
+      allSignals: heuristicSignals,
+      riskBreakdown: heuristicRiskAnalysis.breakdown,
+      topConcerns: heuristicRiskAnalysis.topConcerns,
+      aiEnabled: false,
+      aiSignalsCount: 0,
+      offlineMode: !aiAvailable,
+    }, 'heuristic');
 
     // Step 2: For each detected pattern, get AI explanation and add to RiskSignal
-    
-    const aiAvailable = await AIService.checkAvailability();
-    console.log(`🤖 AI Available: ${aiAvailable}`);
     
     let aiSignals: any[] = [];
     let aiAnalysisTime = 0;
@@ -430,10 +487,36 @@ async function handleAnalyzePage(payload: any) {
 
           aiAnalysisTime = performance.now() - aiStartTime;
           console.log(`✅ AI found ${aiSignals.length} signals in ${aiAnalysisTime.toFixed(0)}ms (parallel)`);
+          
+          // Send partial result after AI analysis
+          const allSignalsWithAI = [...heuristicSignals, ...aiSignals];
+          const aiRiskAnalysis = RiskCalculator.calculateScore(allSignalsWithAI);
+          await sendPartialResult({
+            security,
+            domain,
+            contact,
+            policies,
+            payment,
+            totalRiskScore: aiRiskAnalysis.totalScore,
+            riskLevel: aiRiskAnalysis.riskLevel,
+            allSignals: allSignalsWithAI,
+            riskBreakdown: aiRiskAnalysis.breakdown,
+            topConcerns: aiRiskAnalysis.topConcerns,
+            aiEnabled: true,
+            aiSignalsCount: aiSignals.length,
+          }, 'ai');
         }
       } catch (aiError) {
         aiAnalysisTime = performance.now() - aiStartTime;
         console.error(`⚠️ AI analysis failed after ${aiAnalysisTime.toFixed(0)}ms:`, aiError);
+        
+        // Cleanup AI session on error
+        try {
+          AIService.destroySession();
+          console.log('🧹 AI session cleaned up after error');
+        } catch (cleanupError) {
+          console.warn('⚠️ Failed to cleanup AI session:', cleanupError);
+        }
       }
     } else {
       const reason = !aiAvailable ? 'AI not available' : 
@@ -489,6 +572,7 @@ async function handleAnalyzePage(payload: any) {
       isEcommerceSite: true,
       aiEnabled: aiAvailable,
       aiSignalsCount: aiSignals.length,
+      offlineMode: !aiAvailable,
     };
     
     const totalTime = performance.now() - startTime;
@@ -523,6 +607,9 @@ async function handleAnalyzePage(payload: any) {
       await StorageService.cacheAnalysis(window.location.href, pageType, analysis);
       await StorageService.clearAnalysisProgress(window.location.href);
       console.log(`💾 Analysis cached: ${pageType}`);
+      
+      // Broadcast analysis completion to other tabs
+      crossTabSync.broadcastAnalysisUpdate(window.location.href, analysis);
     } catch (cacheError) {
       console.warn('⚠️ Failed to cache analysis:', cacheError);
     } finally {
@@ -588,6 +675,8 @@ async function handleUpdateIcon(payload: { riskLevel: string; badgeText: string 
 
 let lastUrl = window.location.href;
 let urlCheckInterval: number | null = null;
+let originalPushState: ((...args: any[]) => void) | null = null;
+let originalReplaceState: ((...args: any[]) => void) | null = null;
 
 /**
  * Monitor URL changes for Single Page Applications (SPAs)
@@ -626,11 +715,13 @@ function startUrlChangeMonitoring() {
   });
   
   // Listen for pushState and replaceState (SPA routing)
-  const originalPushState = history.pushState;
-  const originalReplaceState = history.replaceState;
+  originalPushState = history.pushState;
+  originalReplaceState = history.replaceState;
   
   history.pushState = function(...args) {
-    originalPushState.apply(history, args);
+    if (originalPushState) {
+      originalPushState.apply(history, args);
+    }
     const currentUrl = window.location.href;
     
     if (currentUrl !== lastUrl) {
@@ -641,7 +732,9 @@ function startUrlChangeMonitoring() {
   };
   
   history.replaceState = function(...args) {
-    originalReplaceState.apply(history, args);
+    if (originalReplaceState) {
+      originalReplaceState.apply(history, args);
+    }
     const currentUrl = window.location.href;
     
     if (currentUrl !== lastUrl) {
@@ -652,6 +745,29 @@ function startUrlChangeMonitoring() {
   };
   
   console.log('👀 URL change monitoring started');
+}
+
+/**
+ * Stop URL change monitoring and cleanup all listeners
+ */
+function stopUrlChangeMonitoring() {
+  // Clear the polling interval
+  if (urlCheckInterval) {
+    clearInterval(urlCheckInterval);
+    urlCheckInterval = null;
+  }
+  
+  // Restore original history methods
+  if (originalPushState) {
+    history.pushState = originalPushState;
+    originalPushState = null;
+  }
+  if (originalReplaceState) {
+    history.replaceState = originalReplaceState;
+    originalReplaceState = null;
+  }
+  
+  console.log('🧹 URL change monitoring stopped and cleaned up');
 }
 
 /**
@@ -713,6 +829,13 @@ function detectPageTypeFromUrl(url: string): string {
 // Cleanup on page unload
 window.addEventListener('beforeunload', async () => {
   try {
+    // Stop URL monitoring and cleanup listeners
+    stopUrlChangeMonitoring();
+    
+    // Cleanup AI session
+    const { AIService } = await import('../services/ai');
+    AIService.destroySession();
+    
     const { StorageService } = await import('../services/storage');
     // Clear progress markers (analysis interrupted by navigation)
     await StorageService.clearAnalysisProgress(window.location.href);
@@ -728,6 +851,9 @@ window.addEventListener('beforeunload', async () => {
 
 function initializeContentScript() {
   console.log('✅ Shop Sentinel initialized on:', window.location.href);
+  
+  // Initialize cross-tab sync
+  crossTabSync.initialize();
   
   // Set up message handlers
   const messageHandler = createMessageHandler({

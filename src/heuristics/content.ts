@@ -181,11 +181,31 @@ export function checkPolicyPages(): PolicyAnalysis {
   const bodyText = document.body.innerText.toLowerCase();
   
   const policyKeywords = {
-    returns: ['return policy', 'returns policy', 'return & exchange', 'exchange policy'],
-    shipping: ['shipping policy', 'delivery policy', 'shipping info', 'delivery information'],
-    refund: ['refund policy', 'money back guarantee', 'refund process'],
-    terms: ['terms of service', 'terms & conditions', 'terms of use', 'user agreement'],
-    privacy: ['privacy policy', 'privacy statement', 'data policy', 'privacy notice'],
+    returns: [
+      'return policy', 'returns policy', 'return & exchange', 'exchange policy',
+      'return information', 'returns & exchanges', 'refund & return',
+      '/returns', '/return-policy', '/returnpolicy'
+    ],
+    shipping: [
+      'shipping policy', 'delivery policy', 'shipping info', 'delivery information',
+      'shipping & delivery', 'shipping rates', 'shipping costs',
+      '/shipping', '/delivery', '/shipping-policy', '/shippingpolicy'
+    ],
+    refund: [
+      'refund policy', 'money back guarantee', 'refund process', 'refund procedure',
+      'refund terms', 'refund conditions',
+      '/refund', '/refunds', '/refund-policy', '/refundpolicy'
+    ],
+    terms: [
+      'terms of service', 'terms & conditions', 'terms of use', 'user agreement',
+      'service terms', 'website terms', 'terms and conditions',
+      '/terms', '/tos', '/terms-of-service', '/termsofservice', '/terms-and-conditions'
+    ],
+    privacy: [
+      'privacy policy', 'privacy statement', 'data policy', 'privacy notice',
+      'privacy terms', 'data protection',
+      '/privacy', '/privacy-policy', '/privacypolicy', '/data-policy'
+    ],
   };
   
   const hasReturnPolicy = findPolicyLink(allLinks, policyKeywords.returns, policyUrls, 'returns');
@@ -280,6 +300,8 @@ function findPolicyLink(
   policyUrls: PolicyAnalysis['policyUrls'],
   policyType: keyof PolicyAnalysis['policyUrls']
 ): boolean {
+  let bestMatch: { url: string; score: number } | null = null;
+  
   for (const link of links) {
     const href = link.getAttribute('href') || '';
     const text = link.textContent?.toLowerCase().trim() || '';
@@ -294,34 +316,58 @@ function findPolicyLink(
     const skipPatterns = [
       'return to', 'back to', 'go back', 'continue shopping', 'add to cart', 'buy now',
       'login', 'sign in', 'register', 'account', 'profile', 'wishlist', 'favorites',
-      'contact us', 'help', 'support', 'faq', 'search', 'home', 'homepage'
+      'contact us', 'help', 'support', 'faq', 'search', 'home', 'homepage',
+      'cart', 'checkout', 'payment', 'subscribe', 'newsletter'
     ];
     
     if (skipPatterns.some(pattern => text.includes(pattern) || ariaLabel.includes(pattern))) {
       continue;
     }
     
-    const matches = keywords.some(keyword => {
-      const keywordLower = keyword.toLowerCase();
-      return text.includes(keywordLower) || 
-             href.toLowerCase().includes(keywordLower) ||
-             ariaLabel.includes(keywordLower);
-    });
+    let score = 0;
+    let matchesKeyword = false;
     
-    if (matches) {
-      // Avoid false positives like "no returns", "non-returnable", "final sale"
-      if (policyType === 'returns' || policyType === 'refund') {
-        const negativePhrases = [
-          'no return', 'no returns', 'non return', 'non-return', 'non returnable', 'non-returnable',
-          'final sale', 'no exchange', 'no refund', 'non refundable', 'non-refundable'
-        ];
-        const lowerHref = href.toLowerCase();
-        const neg = negativePhrases.some(p => text.includes(p) || ariaLabel.includes(p) || lowerHref.includes(p.replace(/\s+/g, '')));
-        if (neg) {
-          continue; // do not count negative statements as a policy page
-        }
+    // Check for keyword matches
+    for (const keyword of keywords) {
+      const keywordLower = keyword.toLowerCase();
+      if (text.includes(keywordLower)) {
+        score += 10; // Text match is strongest
+        matchesKeyword = true;
+      } else if (ariaLabel.includes(keywordLower)) {
+        score += 8; // Aria label is good
+        matchesKeyword = true;
+      } else if (href.toLowerCase().includes(keywordLower)) {
+        score += 5; // URL match is weaker
+        matchesKeyword = true;
       }
+    }
+    
+    if (!matchesKeyword) continue;
+    
+    // Bonus points for exact matches and common policy URL patterns
+    if (text === keywords[0] || text === keywords[0].toLowerCase()) score += 5;
+    if (href.includes('/policy') || href.includes('/policies')) score += 3;
+    if (href.includes('/legal') || href.includes('/help')) score += 2;
+    
+    // Penalty for generic or suspicious URLs
+    if (href.includes('?') || href.includes('&')) score -= 2; // Query parameters
+    if (href.includes('http') && !href.includes(window.location.hostname)) score -= 5; // External links
+    
+    // Avoid false positives like "no returns", "non-returnable", "final sale"
+    if (policyType === 'returns' || policyType === 'refund') {
+      const negativePhrases = [
+        'no return', 'no returns', 'non return', 'non-return', 'non returnable', 'non-returnable',
+        'final sale', 'no exchange', 'no refund', 'non refundable', 'non-refundable'
+      ];
+      const lowerHref = href.toLowerCase();
+      const neg = negativePhrases.some(p => text.includes(p) || ariaLabel.includes(p) || lowerHref.includes(p.replace(/\s+/g, '')));
+      if (neg) {
+        continue; // do not count negative statements as a policy page
+      }
+    }
 
+    // Keep track of the best match
+    if (!bestMatch || score > bestMatch.score) {
       let absoluteUrl = href;
       if (href.startsWith('/')) {
         absoluteUrl = window.location.origin + href;
@@ -331,9 +377,13 @@ function findPolicyLink(
         absoluteUrl = window.location.origin + '/' + href;
       }
       
-      policyUrls[policyType] = absoluteUrl;
-      return true;
+      bestMatch = { url: absoluteUrl, score };
     }
+  }
+  
+  if (bestMatch) {
+    policyUrls[policyType] = bestMatch.url;
+    return true;
   }
   
   return false;

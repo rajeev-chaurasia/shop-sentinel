@@ -4,3 +4,5 @@ export { FingerprintService } from './fingerprint';
 export { AIService } from './ai';
 export { pageAnalyzer } from './pageAnalyzer';
 export { socialProofAuditService } from './socialProofAudit';
+export { cacheService } from './cache';
+export { crossTabSync } from './crossTabSync';

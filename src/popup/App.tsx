@@ -2,8 +2,11 @@ import { useEffect, useState } from 'react';
 import { useAnalysisStore } from '../stores';
 import { MessagingService } from '../services/messaging';
 import { StorageService } from '../services/storage';
+import { cacheService } from '../services/cache';
+import { crossTabSync } from '../services/crossTabSync';
 import type { AnalysisResult } from '../types';
 import { RiskMeter, ReasonsList, PolicySummary } from '../components';
+import { createErrorFromMessage } from '../types/errors';
 
 function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'reasons' | 'policies'>('overview');
@@ -19,16 +22,43 @@ function App() {
   const [theme, setTheme] = useState<'light' | 'dark' | 'auto'>('auto');
   const [notifications, setNotifications] = useState(false);
   
+  const [operationLock, setOperationLock] = useState(false); // Global lock for all operations
+  const [isInitializing, setIsInitializing] = useState(true); // Show brief loading during init
+  
   const {
     currentUrl,
     analysisResult,
+    partialResult,
     isLoading,
     error,
     startAnalysis,
     setAnalysisResult,
+    setPartialResult,
     completeAnalysis,
     setError,
   } = useAnalysisStore();
+
+  // Use full results if available, otherwise partial results
+  const currentResult = analysisResult || partialResult;
+  
+  // Determine if we should show offline mode
+  // Only show offline mode for final results or when we're sure AI is unavailable
+  const showOfflineMode = analysisResult ? !analysisResult.aiEnabled : false;
+
+  // Helper to prevent concurrent operations
+  const withOperationLock = async <T,>(operation: () => Promise<T>): Promise<T | null> => {
+    if (operationLock) {
+      console.log('⏸️ Operation in progress, skipping');
+      return null;
+    }
+    
+    setOperationLock(true);
+    try {
+      return await operation();
+    } finally {
+      setOperationLock(false);
+    }
+  };
 
   // Validate that an object is a full AnalysisResult (not an in-progress/status payload)
   const isValidAnalysisResult = (data: any): data is AnalysisResult => {
@@ -59,14 +89,18 @@ function App() {
     initializePopup();
     
     return () => {
+      // Cleanup polling interval on unmount
       if (pollInterval) {
         clearInterval(pollInterval);
+        setPollInterval(null);
       }
     };
   }, []);
 
   // Poll for results when in loading state (non-blocking, no isUpdating guard)
   useEffect(() => {
+    let currentInterval: number | null = null;
+    
     if (isLoading && !pollInterval) {
       console.log('⏳ Starting poll for analysis completion');
       const interval = setInterval(async () => {
@@ -93,28 +127,38 @@ function App() {
         }
       }, 1500);
 
+      currentInterval = interval;
       setPollInterval(interval);
     } else if (!isLoading && pollInterval) {
       clearInterval(pollInterval);
       setPollInterval(null);
     }
+    
+    // Cleanup function
+    return () => {
+      if (currentInterval) {
+        clearInterval(currentInterval);
+      }
+    };
   }, [isLoading, pollInterval]);
 
   // Safety net: in case storage event is missed, re-check cache once after 8s of loading
   useEffect(() => {
     if (!isLoading) return;
-    const t = setTimeout(() => {
+    const timeout = setTimeout(() => {
       loadCachedAnalysis();
     }, 8000);
-    return () => clearTimeout(t);
+    
+    return () => clearTimeout(timeout);
   }, [isLoading]);
 
   // Monitor cross-tab storage changes for live updates
   useEffect(() => {
     let updateTimeout: number | null = null;
+    let isMounted = true;
     
     const handleStorageChange = async (changes: { [key: string]: chrome.storage.StorageChange }, areaName: string) => {
-      if (areaName !== 'local') return;
+      if (areaName !== 'local' || !isMounted) return;
       
       // Debounce the update
       if (updateTimeout) {
@@ -122,6 +166,8 @@ function App() {
       }
       
       updateTimeout = setTimeout(async () => {
+        if (!isMounted) return;
+        
         try {
           const tab = await MessagingService.getActiveTab();
           if (!tab?.url) return;
@@ -174,6 +220,7 @@ function App() {
     chrome.storage.onChanged.addListener(handleStorageChange);
     
     return () => {
+      isMounted = false;
       chrome.storage.onChanged.removeListener(handleStorageChange);
       if (updateTimeout) {
         clearTimeout(updateTimeout);
@@ -271,9 +318,77 @@ function App() {
     }
   }, [theme]);
 
+  // Listen for partial analysis results from content script
+  useEffect(() => {
+    const handleRuntimeMessage = (message: any) => {
+      if (message.action === 'PARTIAL_ANALYSIS_RESULT' && message.payload) {
+        console.log('📊 Received partial analysis result:', message.payload.phase);
+        setPartialResult(message.payload);
+      }
+    };
+
+    chrome.runtime.onMessage.addListener(handleRuntimeMessage);
+    
+    return () => {
+      chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
+    };
+  }, [setPartialResult]);
+
+  // Listen for cross-tab synchronization messages
+  useEffect(() => {
+    const unsubscribeAnalysisUpdate = crossTabSync.on('ANALYSIS_UPDATE', (message) => {
+      console.log('🔄 Cross-tab analysis update received:', message.payload);
+      // Update local state if the URL matches
+      if (message.payload.url === currentUrl && message.payload.result) {
+        setAnalysisResult(message.payload.result);
+        setIsFromCache(false);
+        completeAnalysis();
+      }
+    });
+
+    const unsubscribeCacheInvalidation = crossTabSync.on('CACHE_INVALIDATION', (message) => {
+      console.log('🗑️ Cross-tab cache invalidation:', message.payload);
+      // Clear local cache if URL matches
+      if (message.payload.url === currentUrl) {
+        setIsFromCache(false);
+        // Optionally reload cached analysis
+        loadCachedAnalysis();
+      }
+    });
+
+    const unsubscribeAnalysisStart = crossTabSync.on('ANALYSIS_START', (message) => {
+      console.log('🚀 Cross-tab analysis started:', message.payload);
+      // Show that another tab is analyzing the same URL
+      if (message.payload.url === currentUrl && !isLoading) {
+        console.log('📋 Another tab is analyzing this URL - staying synced');
+      }
+    });
+
+    return () => {
+      unsubscribeAnalysisUpdate();
+      unsubscribeCacheInvalidation();
+      unsubscribeAnalysisStart();
+    };
+  }, [currentUrl, isLoading]);
+
   const initializePopup = async () => {
-    await testConnection();
-    await loadCachedAnalysis();
+    setIsInitializing(true);
+    
+    try {
+      // Initialize cross-tab sync
+      await crossTabSync.initialize();
+
+      await testConnection();
+      
+      // Fast cache loading - prioritize showing cached results immediately
+      await loadCachedAnalysisFast();
+      
+      // Then do the full analysis check in background
+      loadCachedAnalysisFull();
+    } finally {
+      // Hide initializing state after a brief moment to show results
+      setTimeout(() => setIsInitializing(false), 500);
+    }
   };
 
   const testConnection = async () => {
@@ -284,58 +399,99 @@ function App() {
       }
     } catch (error) {
       console.error('❌ Connection failed:', error);
+      setError(createErrorFromMessage('Connection to website failed - check your internet connection'));
     }
   };
 
-  const loadCachedAnalysis = async () => {
+  // Fast cache loading - immediately show cached results without complex checks
+  const loadCachedAnalysisFast = async () => {
     try {
       const tab = await MessagingService.getActiveTab();
       if (!tab?.url) return;
 
-      // Get current page type from content script FIRST
-      console.log('🔍 Getting page type for:', tab.url);
-      const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+      // Try to get cached analysis for common page types immediately using fast cache service
+      const commonPageTypes = ['product', 'checkout', 'home', 'category'];
       
-      if (!pageInfoResponse.success || !pageInfoResponse.data) {
-        console.log('❌ Could not get page info');
-        return;
+      for (const pageType of commonPageTypes) {
+        try {
+          const cached = await cacheService.get(tab.url, pageType);
+          if (cached && isValidAnalysisResult(cached)) {
+            console.log(`🚀 Fast cache hit for ${pageType}:`, cached);
+            setAnalysisResult(cached);
+            setIsFromCache(true);
+            return; // Found cached result, stop looking
+          }
+        } catch (e) {
+          // Continue to next page type
+        }
       }
-
-      const pageType = pageInfoResponse.data.pageType || 'other';
-      const confidence = pageInfoResponse.data.pageTypeConfidence || 0;
-      console.log(`📄 Detected page type: ${pageType} (confidence: ${confidence}%)`);
-
-      // Check if analysis is in progress for THIS specific page type
-      const inProgress = await StorageService.isAnalysisInProgress(tab.url, pageType);
-      if (inProgress) {
-        console.log(`⏳ Analysis in progress for ${pageType}, entering loading state`);
-        startAnalysis(tab.url);
-        return;
-      }
-
-      // Check cache only for this specific page type
-      console.log(`🔍 Checking cache for: ${tab.url} (${pageType})`);
-      const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
       
-      if (cached && isValidAnalysisResult(cached)) {
-        console.log(`✅ Cache hit for ${pageType}:`, cached);
-        setAnalysisResult(cached);
-        setIsFromCache(true);
-      } else {
-        console.log(`❌ No cache found for ${pageType} - ready to analyze`);
-        setIsFromCache(false);
-      }
+      console.log('⚡ No fast cache found, will check thoroughly');
     } catch (error) {
-      console.error('Failed to load cache:', error);
+      console.warn('Fast cache loading failed:', error);
     }
   };
 
+  // Full cache loading with page type detection and analysis state checking
+  const loadCachedAnalysisFull = async () => {
+    return withOperationLock(async () => {
+      try {
+        const tab = await MessagingService.getActiveTab();
+        if (!tab?.url) return;
+
+        // Get current page type from content script
+        console.log('🔍 Getting page type for:', tab.url);
+        const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+        
+        if (!pageInfoResponse.success || !pageInfoResponse.data) {
+          console.log('❌ Could not get page info');
+          return;
+        }
+
+        const pageType = pageInfoResponse.data.pageType || 'other';
+        const confidence = pageInfoResponse.data.pageTypeConfidence || 0;
+        console.log(`📄 Detected page type: ${pageType} (confidence: ${confidence}%)`);
+
+        // Check if analysis is in progress for THIS specific page type
+        const inProgress = await StorageService.isAnalysisInProgress(tab.url, pageType);
+        if (inProgress) {
+          console.log(`⏳ Analysis in progress for ${pageType}, entering loading state`);
+          startAnalysis(tab.url);
+          return;
+        }
+
+        // Check cache only for this specific page type
+        console.log(`🔍 Checking cache for: ${tab.url} (${pageType})`);
+        const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
+        
+        if (cached && isValidAnalysisResult(cached)) {
+          // Only update if we don't already have a result from fast loading
+          if (!analysisResult) {
+            console.log(`✅ Cache hit for ${pageType}:`, cached);
+            setAnalysisResult(cached);
+            setIsFromCache(true);
+          }
+        } else {
+          console.log(`❌ No cache found for ${pageType} - ready to analyze`);
+          setIsFromCache(false);
+        }
+      } catch (error) {
+        console.error('Failed to load cache:', error);
+        setError(createErrorFromMessage('Failed to load cached analysis - storage access error'));
+      }
+    });
+  };
+
+  // Keep the old function name for backward compatibility
+  const loadCachedAnalysis = loadCachedAnalysisFull;
+
   // New: Intelligent Scan (cache-first, then analyze)
   const handleSmartScan = async () => {
-    try {
-      const tab = await MessagingService.getActiveTab();
+    return withOperationLock(async () => {
+      try {
+        const tab = await MessagingService.getActiveTab();
       if (!tab?.url) {
-        setError('No active tab found');
+        setError(createErrorFromMessage('No active browser tab found - please make sure you have a website open'));
         return;
       }
 
@@ -382,8 +538,9 @@ function App() {
       // Fallback: full analysis
       await handleAnalyze(false);
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Scan failed');
+      setError(createErrorFromMessage(error));
     }
+    });
   };
 
   const handleAnalyze = async (force = false) => {
@@ -399,7 +556,7 @@ function App() {
       
       const tab = await MessagingService.getActiveTab();
       if (!tab?.url) {
-        setError('No active tab found');
+        setError(createErrorFromMessage('No active browser tab found - please make sure you have a website open'));
         return;
       }
 
@@ -432,10 +589,10 @@ function App() {
         console.log('💾 Cache saved:', cached);
         
       } else {
-        setError(response.error || 'Analysis failed');
+        setError(createErrorFromMessage(response.error || 'Website analysis failed - content script error'));
       }
     } catch (error) {
-      setError(error instanceof Error ? error.message : 'Analysis failed');
+      setError(createErrorFromMessage(error));
     } finally {
       setIsUpdating(false);
     }
@@ -465,7 +622,7 @@ function App() {
       }
     } catch (error) {
       console.error('❌ Error toggling annotations:', error);
-      setError('Failed to toggle annotations');
+      setError(createErrorFromMessage(error));
     }
   };
 
@@ -492,16 +649,65 @@ function App() {
         <div className="flex-1 flex flex-col overflow-hidden">
           {error && (
             <div className="mx-4 mt-4 animate-slideUp">
-              <div className="bg-red-50 border-2 border-red-300 rounded-xl p-3 shadow-sm">
-                <div className="flex items-start gap-2">
-                  <span className="text-xl flex-shrink-0">❌</span>
-                  <p className="text-sm text-red-800 font-medium flex-1">{error}</p>
+              <div className={`border-2 rounded-xl p-4 shadow-sm ${
+                error.userMessage.severity === 'high' ? 'bg-red-50 border-red-300' :
+                error.userMessage.severity === 'medium' ? 'bg-orange-50 border-orange-300' :
+                'bg-yellow-50 border-yellow-300'
+              }`}>
+                <div className="flex items-start gap-3">
+                  <span className="text-2xl flex-shrink-0">{error.userMessage.icon}</span>
+                  <div className="flex-1">
+                    <h3 className={`font-bold text-sm mb-1 ${
+                      error.userMessage.severity === 'high' ? 'text-red-800' :
+                      error.userMessage.severity === 'medium' ? 'text-orange-800' :
+                      'text-yellow-800'
+                    }`}>
+                      {error.userMessage.title}
+                    </h3>
+                    <p className={`text-sm mb-2 ${
+                      error.userMessage.severity === 'high' ? 'text-red-700' :
+                      error.userMessage.severity === 'medium' ? 'text-orange-700' :
+                      'text-yellow-700'
+                    }`}>
+                      {error.userMessage.message}
+                    </p>
+                    {error.userMessage.suggestion && (
+                      <p className={`text-xs italic ${
+                        error.userMessage.severity === 'high' ? 'text-red-600' :
+                        error.userMessage.severity === 'medium' ? 'text-orange-600' :
+                        'text-yellow-600'
+                      }`}>
+                        💡 {error.userMessage.suggestion}
+                      </p>
+                    )}
+                  </div>
                 </div>
               </div>
             </div>
           )}
 
-          {!analysisResult && !isLoading && (
+          {isInitializing && !analysisResult && !error && (
+            <div className="flex-1 flex items-center justify-center p-6">
+              <div className="text-center space-y-4 animate-fadeIn">
+                <div className="w-20 h-20 mx-auto bg-gradient-to-br from-blue-100 to-purple-100 rounded-full flex items-center justify-center shadow-lg">
+                  <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
+                </div>
+                <div className="space-y-2">
+                  <h3 className="text-lg font-bold text-gray-800">Checking Cache</h3>
+                  <p className="text-sm text-gray-600 max-w-xs mx-auto">
+                    Looking for previous analysis results to show instantly
+                  </p>
+                  <div className="flex items-center justify-center gap-1 mt-3">
+                    <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-bounce"></span>
+                    <span className="inline-block w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></span>
+                    <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {!analysisResult && !isLoading && !isInitializing && (
             <div className="flex-1 flex items-center justify-center p-6">
               <div className="text-center space-y-4 animate-scaleIn">
                 <div className="w-24 h-24 mx-auto bg-gradient-to-br from-blue-100 to-purple-100 rounded-full flex items-center justify-center shadow-lg">
@@ -566,7 +772,7 @@ function App() {
             </div>
           )}
 
-          {analysisResult && (
+          {(analysisResult || partialResult) ? ( 
             <div className="flex-1 flex flex-col">
               <div className="px-4 pt-4 pb-2">
                 <div className="flex items-center justify-between mb-3">
@@ -582,11 +788,11 @@ function App() {
                   <button onClick={() => setActiveTab('overview')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 ${activeTab === 'overview' ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-md transform scale-105' : 'text-gray-600 dark:text-slate-300 hover:text-gray-900 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-600 hover:bg-opacity-50'}`}>
                     Overview
                   </button>
-                    <button onClick={() => setActiveTab('reasons')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 relative ${activeTab === 'reasons' ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-md transform scale-105' : 'text-gray-600 dark:text-slate-300 hover:text-gray-900 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-600 hover:bg-opacity-50'}`}>
+                  <button onClick={() => setActiveTab('reasons')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 relative ${activeTab === 'reasons' ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-md transform scale-105' : 'text-gray-600 dark:text-slate-300 hover:text-gray-900 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-600 hover:bg-opacity-50'}`}>
                     Issues
-                    {(analysisResult.allSignals?.length ?? 0) > 0 && (
+                    {(currentResult!.allSignals?.length ?? 0) > 0 && (
                       <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold ${activeTab === 'reasons' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300' : 'bg-gray-200 dark:bg-slate-600 text-gray-700 dark:text-slate-300'}`}>
-                        {analysisResult.allSignals?.length ?? 0}
+                        {currentResult!.allSignals?.length ?? 0}
                       </span>
                     )}
                   </button>
@@ -600,15 +806,32 @@ function App() {
                 {activeTab === 'overview' && (
                   <div className="space-y-4 animate-fadeIn">
                     <div className="flex justify-center py-6 bg-gradient-to-br from-gray-50 to-blue-50 dark:from-slate-700 dark:to-slate-800 rounded-xl">
-                      <RiskMeter score={analysisResult.totalRiskScore} level={analysisResult.riskLevel} size="large" animated={true} />
+                      <RiskMeter score={currentResult!.totalRiskScore} level={currentResult!.riskLevel} size="large" animated={true} />
                     </div>
                     
                     {/* AI Status Indicator */}
-                    {analysisResult.aiEnabled && (
+                    {showOfflineMode ? (
+                      <div className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-yellow-50 to-orange-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-yellow-300 dark:border-slate-500">
+                        <span className="text-lg">📱</span>
+                        <span className="text-sm font-bold text-gray-700 dark:text-gray-300">
+                          Offline Mode: <span className="text-orange-600 dark:text-orange-400">Basic analysis only</span>
+                        </span>
+                        <div className="text-xs text-gray-600 dark:text-gray-400 mt-1 text-center">
+                          AI features unavailable - showing heuristic analysis results
+                        </div>
+                      </div>
+                    ) : currentResult!.aiEnabled ? (
                       <div className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-purple-200 dark:border-slate-600">
                         <span className="text-lg">🤖</span>
                         <span className="text-sm font-bold text-gray-700 dark:text-gray-300">
-                          AI Analysis: <span className="text-purple-600 dark:text-purple-400">{analysisResult.aiSignalsCount || 0} signals detected</span>
+                          AI Analysis: <span className="text-purple-600 dark:text-purple-400">{currentResult!.aiSignalsCount || 0} signals detected</span>
+                        </span>
+                      </div>
+                    ) : (
+                      <div className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-blue-200 dark:border-slate-600">
+                        <span className="text-lg">🔍</span>
+                        <span className="text-sm font-bold text-gray-700 dark:text-gray-300">
+                          Analyzing with AI...
                         </span>
                       </div>
                     )}
@@ -616,27 +839,27 @@ function App() {
                       <div className="bg-gradient-to-br from-blue-50 to-indigo-50 dark:from-slate-700 dark:to-slate-600 rounded-xl p-4 border border-blue-200 dark:border-slate-500 shadow-sm">
                         <div className="text-xs font-semibold text-blue-600 dark:text-blue-400 mb-1.5 uppercase tracking-wide">Security</div>
                         <div className="flex items-center gap-2">
-                          <span className="text-2xl">{(analysisResult.security?.isHttps ?? false) ? '🔒' : '⚠️'}</span>
-                          <span className="font-bold text-gray-800 dark:text-gray-200">{(analysisResult.security?.isHttps ?? false) ? 'HTTPS' : 'Not Secure'}</span>
+                          <span className="text-2xl">{(currentResult!.security?.isHttps ?? false) ? '🔒' : '⚠️'}</span>
+                          <span className="font-bold text-gray-800 dark:text-gray-200">{(currentResult!.security?.isHttps ?? false) ? 'HTTPS' : 'Not Secure'}</span>
                         </div>
                       </div>
                       <div className="bg-gradient-to-br from-purple-50 to-pink-50 dark:from-slate-700 dark:to-slate-600 rounded-xl p-4 border border-purple-200 dark:border-slate-500 shadow-sm">
                         <div className="text-xs font-semibold text-purple-600 dark:text-purple-400 mb-1.5 uppercase tracking-wide">Issues Found</div>
                         <div className="flex items-center gap-2">
-                          <span className="text-2xl">{(analysisResult.allSignals?.length ?? 0) === 0 ? '✅' : '🚨'}</span>
-                          <span className="font-bold text-gray-800 dark:text-gray-200">{analysisResult.allSignals?.length ?? 0} detected</span>
+                          <span className="text-2xl">{(currentResult!.allSignals?.length ?? 0) === 0 ? '✅' : '🚨'}</span>
+                          <span className="font-bold text-gray-800 dark:text-gray-200">{currentResult!.allSignals?.length ?? 0} detected</span>
                         </div>
                       </div>
                     </div>
-                    {(analysisResult.allSignals?.length ?? 0) > 0 && (
+                    {(currentResult!.allSignals?.length ?? 0) > 0 && (
                       <div>
                         <h3 className="text-sm font-bold text-gray-800 dark:text-gray-200 mb-3 flex items-center gap-2">
                           <span className="text-lg">⚠️</span>Top Issues
                         </h3>
-                        <ReasonsList signals={analysisResult.allSignals ?? []} maxItems={2} showCategory={true} compact={true} />
-                        {(analysisResult.allSignals?.length ?? 0) > 2 && (
+                        <ReasonsList signals={currentResult!.allSignals ?? []} maxItems={2} showCategory={true} compact={true} />
+                        {(currentResult!.allSignals?.length ?? 0) > 2 && (
                           <button onClick={() => setActiveTab('reasons')} className="w-full mt-3 py-2 px-4 bg-gradient-to-r from-orange-100 to-red-100 dark:from-slate-600 dark:to-slate-500 hover:from-orange-200 hover:to-red-200 dark:hover:from-slate-500 dark:hover:to-slate-400 border-2 border-orange-300 dark:border-slate-400 text-orange-900 dark:text-slate-200 font-semibold text-sm rounded-xl transition-all duration-200 shadow-sm hover:shadow">
-                            View All {analysisResult.allSignals?.length ?? 0} Issues →
+                            View All {currentResult!.allSignals?.length ?? 0} Issues →
                           </button>
                         )}
                       </div>
@@ -646,7 +869,7 @@ function App() {
                         <span className="text-lg">📄</span>Policies
                       </h3>
                       <PolicySummary 
-                        policies={analysisResult.policies ?? {
+                        policies={currentResult!.policies ?? {
                           hasReturnPolicy: false,
                           hasShippingPolicy: false,
                           hasRefundPolicy: false,
@@ -658,9 +881,8 @@ function App() {
                         compact={true} 
                       />
                     </div>
-                    
-                    {/* TG-09: On-Page Annotations Toggle */}
-                    {(analysisResult.allSignals?.length ?? 0) > 0 && (
+                  
+                    {(currentResult!.allSignals?.length ?? 0) > 0 && (
                       <div className="bg-gradient-to-br from-orange-50 to-yellow-50 dark:from-slate-700 dark:to-slate-600 rounded-xl p-4 border-2 border-orange-300 dark:border-slate-500">
                         <div className="flex items-center justify-between mb-2">
                           <div className="flex items-center gap-2">
@@ -696,12 +918,12 @@ function App() {
                 )}
                 {activeTab === 'reasons' && (
                   <div className="pt-2 animate-fadeIn">
-                    <ReasonsList signals={analysisResult.allSignals ?? []} showCategory={true} compact={false} />
+                    <ReasonsList signals={currentResult!.allSignals ?? []} showCategory={true} compact={false} />
                   </div>
                 )}
                 {activeTab === 'policies' && (
                   <div className="pt-2 animate-fadeIn">
-                    <PolicySummary policies={analysisResult.policies} compact={false} />
+                    <PolicySummary policies={currentResult!.policies} compact={false} />
                   </div>
                 )}
               </div>
@@ -714,202 +936,202 @@ function App() {
                 </div>
               )}
             </div>
-          )}
+          ) : null}
         </div>
-      </div>
 
-      {/* Settings Panel Overlay */}
-      {showSettings && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowSettings(false)}>
-          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl max-w-sm w-full mx-4 max-h-[90vh] flex flex-col animate-scaleIn" onClick={(e) => e.stopPropagation()}>
-            <div className="bg-gradient-to-r from-blue-600 to-purple-600 dark:from-slate-700 dark:to-slate-600 px-6 py-4 rounded-t-2xl flex-shrink-0">
-              <div className="flex items-center justify-between">
-                <h2 className="text-xl font-bold text-white flex items-center gap-2">
-                  <span>⚙️</span>
-                  Analysis Settings
-                </h2>
-                <button
-                  onClick={() => setShowSettings(false)}
-                  className="w-8 h-8 bg-white bg-opacity-20 rounded-full flex items-center justify-center hover:bg-opacity-30 transition-all duration-200"
-                >
-                  <span className="text-white text-lg">×</span>
-                </button>
-              </div>
-            </div>
-
-            <div className="p-6 space-y-6 flex-1 overflow-y-auto">
-              {/* Core Features */}
-              <div className="space-y-4">
-                <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 border-b border-gray-200 dark:border-gray-700 pb-2">🛡️ Protection Features</h3>
-                
-                {/* AI Analysis */}
-                <div className="flex items-center justify-between p-4 bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-purple-200 dark:border-slate-500">
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">🤖</span>
-                    <div>
-                      <div className="text-sm font-bold text-gray-800 dark:text-gray-200">Smart Scam Detection</div>
-                      <div className="text-xs text-gray-600 dark:text-gray-400">AI finds hidden tricks and fake reviews</div>
-                    </div>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={useAI}
-                      onChange={(e) => setUseAI(e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-200 dark:bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
-                  </label>
-                </div>
-
-                {/* Domain Trust Check */}
-                <div className="flex items-center justify-between p-4 bg-gradient-to-r from-blue-50 to-cyan-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-blue-200 dark:border-slate-500">
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">🛡️</span>
-                    <div>
-                      <div className="text-sm font-bold text-gray-800 dark:text-gray-200">Website Legitimacy Check</div>
-                      <div className="text-xs text-gray-600 dark:text-gray-400">Verify if the site is trustworthy and established</div>
-                    </div>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={useWhoisVerification}
-                      onChange={(e) => setUseWhoisVerification(e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-200 dark:bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                  </label>
-                </div>
-              </div>
-
-              {/* Preferences */}
-              <div className="space-y-4">
-                <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 border-b border-gray-200 dark:border-gray-700 pb-2">⚙️ Preferences</h3>
-                
-                {/* Theme */}
-                <div className="flex items-center justify-between p-4 bg-gradient-to-r from-gray-50 to-slate-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-gray-200 dark:border-slate-500">
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">🎨</span>
-                    <div>
-                      <div className="text-sm font-bold text-gray-800 dark:text-gray-200">Theme</div>
-                      <div className="text-xs text-gray-600 dark:text-gray-400">Choose your preferred appearance</div>
-                    </div>
-                  </div>
-                  <select
-                    value={theme}
-                    onChange={(e) => setTheme(e.target.value as 'light' | 'dark' | 'auto')}
-                    className="px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200"
-                  >
-                    <option value="auto">Auto</option>
-                    <option value="light">Light</option>
-                    <option value="dark">Dark</option>
-                  </select>
-                </div>
-
-                {/* Notifications */}
-                <div className="flex items-center justify-between p-4 bg-gradient-to-r from-pink-50 to-rose-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-pink-200 dark:border-slate-500">
-                  <div className="flex items-center gap-3">
-                    <span className="text-2xl">🔔</span>
-                    <div>
-                      <div className="text-sm font-bold text-gray-800 dark:text-gray-200">Risk Alerts</div>
-                      <div className="text-xs text-gray-600 dark:text-gray-400">Notify me when I visit risky sites</div>
-                    </div>
-                  </div>
-                  <label className="relative inline-flex items-center cursor-pointer">
-                    <input
-                      type="checkbox"
-                      checked={notifications}
-                      onChange={(e) => setNotifications(e.target.checked)}
-                      className="sr-only peer"
-                    />
-                    <div className="w-11 h-6 bg-gray-200 dark:bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-pink-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-pink-500"></div>
-                  </label>
-                </div>
-              </div>
-
-              {/* Reset Settings */}
-              <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
-                <div className="flex gap-2 mb-3">
+        {/* Settings Panel Overlay */}
+        {showSettings && (
+          <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50" onClick={() => setShowSettings(false)}>
+            <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl max-w-sm w-full mx-4 max-h-[90vh] flex flex-col animate-scaleIn" onClick={(e) => e.stopPropagation()}>
+              <div className="bg-gradient-to-r from-blue-600 to-purple-600 dark:from-slate-700 dark:to-slate-600 px-6 py-4 rounded-t-2xl flex-shrink-0">
+                <div className="flex items-center justify-between">
+                  <h2 className="text-xl font-bold text-white flex items-center gap-2">
+                    <span>⚙️</span>
+                    Analysis Settings
+                  </h2>
                   <button
-                    onClick={async () => {
-                      // Test notification with mock data
-                      const mockResult: AnalysisResult = {
-                        url: 'https://example-risky-site.com',
-                        timestamp: Date.now(),
-                        pageType: 'home',
-                        security: { 
-                          isHttps: false, 
-                          hasMixedContent: false, 
-                          hasValidCertificate: false, 
-                          signals: [] 
-                        },
-                        domain: { 
-                          domain: 'example-risky-site.com', 
-                          ageInDays: 30, 
-                          registrar: null, 
-                          isSuspicious: true, 
-                          signals: [] 
-                        },
-                        contact: { 
-                          hasContactPage: false, 
-                          hasPhoneNumber: false, 
-                          hasPhysicalAddress: false, 
-                          hasEmail: false, 
-                          socialMediaLinks: [], 
-                          socialMediaProfiles: [], 
-                          signals: [] 
-                        },
-                        policies: { 
-                          hasReturnPolicy: false, 
-                          hasShippingPolicy: false, 
-                          hasRefundPolicy: false, 
-                          hasTermsOfService: false, 
-                          hasPrivacyPolicy: false, 
-                          policyUrls: {}, 
-                          signals: [] 
-                        },
-                        payment: { 
-                          acceptedMethods: [], 
-                          hasReversibleMethods: false, 
-                          hasIrreversibleOnly: false, 
-                          signals: [] 
-                        },
-                        totalRiskScore: 75,
-                        riskLevel: 'high',
-                        allSignals: [],
-                        analysisVersion: '1.0.0',
-                        isEcommerceSite: true
-                      };
-                      await showRiskNotification(mockResult);
-                    }}
-                    disabled={!notifications}
-                    className="flex-1 py-2 px-3 bg-gradient-to-r from-blue-100 to-indigo-100 dark:from-slate-600 dark:to-slate-500 hover:from-blue-200 hover:to-indigo-200 dark:hover:from-slate-500 dark:hover:to-slate-400 border-2 border-blue-300 dark:border-slate-400 text-blue-700 dark:text-slate-200 font-semibold text-sm rounded-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    onClick={() => setShowSettings(false)}
+                    className="w-8 h-8 bg-white bg-opacity-20 rounded-full flex items-center justify-center hover:bg-opacity-30 transition-all duration-200"
                   >
-                    🔔 Test Notification
-                  </button>
-                  <button
-                    onClick={() => {
-                      if (confirm('Reset all settings to defaults?')) {
-                        setUseAI(true);
-                        setUseWhoisVerification(false);
-                        setTheme('auto');
-                        setNotifications(false);
-                      }
-                    }}
-                    className="flex-1 py-2 px-3 bg-gradient-to-r from-red-100 to-red-200 dark:from-slate-600 dark:to-slate-500 hover:from-red-200 hover:to-red-300 dark:hover:from-slate-500 dark:hover:to-slate-400 border-2 border-red-300 dark:border-slate-400 text-red-700 dark:text-slate-200 font-semibold text-sm rounded-xl transition-all duration-200"
-                  >
-                    🔄 Reset to Defaults
+                    <span className="text-white text-lg">×</span>
                   </button>
                 </div>
-                <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
-                  Settings are saved automatically
-                </p>
+              </div>
+
+              <div className="p-6 space-y-6 flex-1 overflow-y-auto">
+                {/* Core Features */}
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 border-b border-gray-200 dark:border-gray-700 pb-2">🛡️ Protection Features</h3>
+                  
+                  {/* AI Analysis */}
+                  <div className="flex items-center justify-between p-4 bg-gradient-to-r from-purple-50 to-indigo-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-purple-200 dark:border-slate-500">
+                    <div className="flex items-center gap-3">
+                      <span className="text-2xl">🤖</span>
+                      <div>
+                        <div className="text-sm font-bold text-gray-800 dark:text-gray-200">Smart Scam Detection</div>
+                        <div className="text-xs text-gray-600 dark:text-gray-400">AI finds hidden tricks and fake reviews</div>
+                      </div>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={useAI}
+                        onChange={(e) => setUseAI(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-gray-200 dark:bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
+                    </label>
+                  </div>
+
+                  {/* Domain Trust Check */}
+                  <div className="flex items-center justify-between p-4 bg-gradient-to-r from-blue-50 to-cyan-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-blue-200 dark:border-slate-500">
+                    <div className="flex items-center gap-3">
+                      <span className="text-2xl">🛡️</span>
+                      <div>
+                        <div className="text-sm font-bold text-gray-800 dark:text-gray-200">Website Legitimacy Check</div>
+                        <div className="text-xs text-gray-600 dark:text-gray-400">Verify if the site is trustworthy and established</div>
+                      </div>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={useWhoisVerification}
+                        onChange={(e) => setUseWhoisVerification(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-gray-200 dark:bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Preferences */}
+                <div className="space-y-4">
+                  <h3 className="text-lg font-semibold text-gray-800 dark:text-gray-200 border-b border-gray-200 dark:border-gray-700 pb-2">⚙️ Preferences</h3>
+                  
+                  {/* Theme */}
+                  <div className="flex items-center justify-between p-4 bg-gradient-to-r from-gray-50 to-slate-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-gray-200 dark:border-slate-500">
+                    <div className="flex items-center gap-3">
+                      <span className="text-2xl">🎨</span>
+                      <div>
+                        <div className="text-sm font-bold text-gray-800 dark:text-gray-200">Theme</div>
+                        <div className="text-xs text-gray-600 dark:text-gray-400">Choose your preferred appearance</div>
+                      </div>
+                    </div>
+                    <select
+                      value={theme}
+                      onChange={(e) => setTheme(e.target.value as 'light' | 'dark' | 'auto')}
+                      className="px-3 py-1 text-sm border border-gray-300 dark:border-gray-600 rounded-lg bg-white dark:bg-gray-700 text-gray-900 dark:text-gray-200"
+                    >
+                      <option value="auto">Auto</option>
+                      <option value="light">Light</option>
+                      <option value="dark">Dark</option>
+                    </select>
+                  </div>
+
+                  {/* Notifications */}
+                  <div className="flex items-center justify-between p-4 bg-gradient-to-r from-pink-50 to-rose-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-pink-200 dark:border-slate-500">
+                    <div className="flex items-center gap-3">
+                      <span className="text-2xl">🔔</span>
+                      <div>
+                        <div className="text-sm font-bold text-gray-800 dark:text-gray-200">Risk Alerts</div>
+                        <div className="text-xs text-gray-600 dark:text-gray-400">Notify me when I visit risky sites</div>
+                      </div>
+                    </div>
+                    <label className="relative inline-flex items-center cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={notifications}
+                        onChange={(e) => setNotifications(e.target.checked)}
+                        className="sr-only peer"
+                      />
+                      <div className="w-11 h-6 bg-gray-200 dark:bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-pink-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-pink-500"></div>
+                    </label>
+                  </div>
+                </div>
+
+                {/* Reset Settings */}
+                <div className="pt-4 border-t border-gray-200 dark:border-gray-700">
+                  <div className="flex gap-2 mb-3">
+                    <button
+                      onClick={async () => {
+                        // Test notification with mock data
+                        const mockResult: AnalysisResult = {
+                          url: 'https://example-risky-site.com',
+                          timestamp: Date.now(),
+                          pageType: 'home',
+                          security: { 
+                            isHttps: false, 
+                            hasMixedContent: false, 
+                            hasValidCertificate: false, 
+                            signals: [] 
+                          },
+                          domain: { 
+                            domain: 'example-risky-site.com', 
+                            ageInDays: 30, 
+                            registrar: null, 
+                            isSuspicious: true, 
+                            signals: [] 
+                          },
+                          contact: { 
+                            hasContactPage: false, 
+                            hasPhoneNumber: false, 
+                            hasPhysicalAddress: false, 
+                            hasEmail: false, 
+                            socialMediaLinks: [], 
+                            socialMediaProfiles: [], 
+                            signals: [] 
+                          },
+                          policies: { 
+                            hasReturnPolicy: false, 
+                            hasShippingPolicy: false, 
+                            hasRefundPolicy: false, 
+                            hasTermsOfService: false, 
+                            hasPrivacyPolicy: false, 
+                            policyUrls: {}, 
+                            signals: [] 
+                          },
+                          payment: { 
+                            acceptedMethods: [], 
+                            hasReversibleMethods: false, 
+                            hasIrreversibleOnly: false, 
+                            signals: [] 
+                          },
+                          totalRiskScore: 75,
+                          riskLevel: 'high',
+                          allSignals: [],
+                          analysisVersion: '1.0.0',
+                          isEcommerceSite: true
+                        };
+                        await showRiskNotification(mockResult);
+                      }}
+                      disabled={!notifications}
+                      className="flex-1 py-2 px-3 bg-gradient-to-r from-blue-100 to-indigo-100 dark:from-slate-600 dark:to-slate-500 hover:from-blue-200 hover:to-indigo-200 dark:hover:from-slate-500 dark:hover:to-slate-400 border-2 border-blue-300 dark:border-slate-400 text-blue-700 dark:text-slate-200 font-semibold text-sm rounded-xl transition-all duration-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      🔔 Test Notification
+                    </button>
+                    <button
+                      onClick={() => {
+                        if (confirm('Reset all settings to defaults?')) {
+                          setUseAI(true);
+                          setUseWhoisVerification(false);
+                          setTheme('auto');
+                          setNotifications(false);
+                        }
+                      }}
+                      className="flex-1 py-2 px-3 bg-gradient-to-r from-red-100 to-red-200 dark:from-slate-600 dark:to-slate-500 hover:from-red-200 hover:to-red-300 dark:hover:from-slate-500 dark:hover:to-slate-400 border-2 border-red-300 dark:border-slate-400 text-red-700 dark:text-slate-200 font-semibold text-sm rounded-xl transition-all duration-200"
+                    >
+                      🔄 Reset to Defaults
+                    </button>
+                  </div>
+                  <p className="text-xs text-gray-500 dark:text-gray-400 text-center">
+                    Settings are saved automatically
+                  </p>
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      )}
+        )}
+      </div>
     </div>
   );
 }
