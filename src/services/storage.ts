@@ -320,5 +320,52 @@ export const StorageService = {
       return false;
     }
   },
+
+  /**
+   * Save partial analysis result for persistence across popup sessions
+   */
+  async savePartialResult(url: string, pageType: string, partialResult: any): Promise<boolean> {
+    const partialKey = `partial_${this.generateCacheKey(url, pageType)}`;
+    const partialData = {
+      result: partialResult,
+      savedAt: Date.now(),
+      url,
+      pageType,
+    };
+    console.log(`💾 Saving partial result: ${partialKey}`);
+    return this.set(partialKey, partialData);
+  },
+
+  /**
+   * Load partial analysis result from storage
+   */
+  async loadPartialResult(url: string, pageType: string): Promise<any | null> {
+    const partialKey = `partial_${this.generateCacheKey(url, pageType)}`;
+    const partialData = await this.get<any>(partialKey);
+    
+    if (!partialData) {
+      return null;
+    }
+
+    // Check if partial result is stale (more than 5 minutes old)
+    const maxAge = 5 * 60 * 1000; // 5 minutes
+    if (Date.now() - partialData.savedAt > maxAge) {
+      console.log(`🕐 Partial result stale, clearing: ${partialKey}`);
+      await this.remove(partialKey);
+      return null;
+    }
+
+    console.log(`📊 Loaded partial result: ${partialKey}`);
+    return partialData.result;
+  },
+
+  /**
+   * Clear partial result for a URL/pageType
+   */
+  async clearPartialResult(url: string, pageType: string): Promise<boolean> {
+    const partialKey = `partial_${this.generateCacheKey(url, pageType)}`;
+    console.log(`🗑️ Clearing partial result: ${partialKey}`);
+    return this.remove(partialKey);
+  },
 };
 

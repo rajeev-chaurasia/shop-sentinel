@@ -413,6 +413,8 @@ No markdown code blocks, no explanations, JSON only.`;
         domainAgeYears?: number | null;
         domainStatus?: string[] | null;
         domainRegistrar?: string | null;
+        // Whether domain checking was enabled by user
+        domainCheckEnabled?: boolean;
     }): Promise<RiskSignal[]> {
         try {
             // Check cache first
@@ -439,6 +441,8 @@ Domain Protection: ${pageData.domainStatus?.length || 0} status flags${
         ? ` (${pageData.domainStatus.slice(0, 3).join(', ')})`
         : ''
 }`
+                : pageData.domainCheckEnabled === false
+                ? 'ℹ️ DOMAIN CHECK DISABLED - Domain verification was intentionally skipped by user. Do not penalize for missing domain details.'
                 : '⚠️ DOMAIN AGE UNKNOWN - Exercise extra caution! Unable to verify domain registration details. This could indicate a new or suspicious domain.';
 
             const socialInfo = pageData.socialMedia
@@ -484,7 +488,9 @@ ${domainInfo}
 
 📄 Content Sample: ${pageData.content.slice(0, 400)}
 
-⚠️ VIGILANCE PROTOCOL: If domain age is unknown, significantly increase scrutiny of ALL other factors. Missing domain data often indicates new/suspicious domains that require extra verification.
+⚠️ VIGILANCE PROTOCOL: ${pageData.domainCheckEnabled === false 
+    ? 'Domain checking disabled by user - do not penalize for missing domain details. Evaluate based on available security, contact, and policy information.'
+    : 'If domain age is unknown, significantly increase scrutiny of ALL other factors. Missing domain data often indicates new/suspicious domains that require extra verification.'}
 
 ⭐ CRITICAL CONTEXT-AWARE RULES:
 

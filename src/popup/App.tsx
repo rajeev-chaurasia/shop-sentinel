@@ -23,7 +23,7 @@ function App() {
   const [notifications, setNotifications] = useState(false);
   
   const [operationLock, setOperationLock] = useState(false); // Global lock for all operations
-  const [isInitializing, setIsInitializing] = useState(true); // Show brief loading during init
+  const [isCheckingCache, setIsCheckingCache] = useState(false); // Show cache checking state
   
   const {
     currentUrl,
@@ -320,10 +320,22 @@ function App() {
 
   // Listen for partial analysis results from content script
   useEffect(() => {
-    const handleRuntimeMessage = (message: any) => {
+    const handleRuntimeMessage = async (message: any) => {
       if (message.action === 'PARTIAL_ANALYSIS_RESULT' && message.payload) {
         console.log('📊 Received partial analysis result:', message.payload.phase);
         setPartialResult(message.payload);
+        
+        // Persist partial result to storage for cross-session continuity
+        try {
+          const tab = await MessagingService.getActiveTab();
+          if (tab?.url) {
+            const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+            const pageType = pageInfoResponse.success ? pageInfoResponse.data.pageType || 'other' : 'other';
+            await StorageService.savePartialResult(tab.url, pageType, message.payload);
+          }
+        } catch (error) {
+          console.warn('⚠️ Failed to persist partial result:', error);
+        }
       }
     };
 
@@ -340,9 +352,25 @@ function App() {
       console.log('🔄 Cross-tab analysis update received:', message.payload);
       // Update local state if the URL matches
       if (message.payload.url === currentUrl && message.payload.result) {
+        console.log('✅ Analysis complete via cross-tab sync, updating UI');
+        
+        // Always set the result and complete analysis, even if validation fails
         setAnalysisResult(message.payload.result);
         setIsFromCache(false);
         completeAnalysis();
+        
+        // Show notification for risky sites (only if result is valid)
+        if (isValidAnalysisResult(message.payload.result)) {
+          showRiskNotification(message.payload.result);
+          
+          // Clear any stored partial results since we now have final results (async, don't wait)
+          const pageType = message.payload.result.pageType || 'other';
+          StorageService.clearPartialResult(message.payload.url, pageType).catch(error => {
+            console.warn('⚠️ Failed to clear partial results:', error);
+          });
+        } else {
+          console.warn('⚠️ Analysis result received but failed validation');
+        }
       }
     });
 
@@ -372,26 +400,43 @@ function App() {
   }, [currentUrl, isLoading]);
 
   const initializePopup = async () => {
-    setIsInitializing(true);
-    
+    // Start with no loading states for instant popup feel
+    setIsCheckingCache(false);
+
     try {
       // Initialize cross-tab sync
       await crossTabSync.initialize();
 
       await testConnection();
-      
-      // Fast cache loading - prioritize showing cached results immediately
-      await loadCachedAnalysisFast();
-      
-      // Then do the full analysis check in background
-      loadCachedAnalysisFull();
-    } finally {
-      // Hide initializing state after a brief moment to show results
-      setTimeout(() => setIsInitializing(false), 500);
-    }
-  };
 
-  const testConnection = async () => {
+      // Start cache loading and show checking state only if it takes time
+      const cacheCheckPromise = loadCachedAnalysisFast();
+      const fullCheckPromise = loadCachedAnalysisFull();
+
+      // Show checking cache UI only if fast cache loading takes more than 100ms
+      const timeoutId = setTimeout(() => {
+        setIsCheckingCache(true);
+      }, 100);
+
+      // Wait for fast cache loading
+      await cacheCheckPromise;
+      clearTimeout(timeoutId);
+
+      // If we still don't have results after fast loading, hide checking state
+      if (!analysisResult && !partialResult) {
+        setIsCheckingCache(false);
+      }
+
+      // Continue with full analysis check in background
+      await fullCheckPromise;
+
+      // Final cleanup
+      setIsCheckingCache(false);
+    } catch (error) {
+      console.error('Initialization error:', error);
+      setIsCheckingCache(false);
+    }
+  };  const testConnection = async () => {
     try {
       const response = await MessagingService.sendToActiveTab('PING');
       if (response.success) {
@@ -457,6 +502,14 @@ function App() {
         if (inProgress) {
           console.log(`⏳ Analysis in progress for ${pageType}, entering loading state`);
           startAnalysis(tab.url);
+          
+          // Try to restore partial results if available
+          const partialResult = await StorageService.loadPartialResult(tab.url, pageType);
+          if (partialResult) {
+            console.log(`📊 Restored partial result for ${pageType}`);
+            setPartialResult(partialResult);
+          }
+          
           return;
         }
 
@@ -550,52 +603,42 @@ function App() {
       return;
     }
     
-    try {
-      setIsUpdating(true);
-      setIsFromCache(false); // Reset cache flag for fresh analysis
-      
-      const tab = await MessagingService.getActiveTab();
-      if (!tab?.url) {
-        setError(createErrorFromMessage('No active browser tab found - please make sure you have a website open'));
-        return;
-      }
-
-      // If forcing refresh, clear cache first
-      if (force) {
-        await StorageService.clearCachedAnalysis(tab.url);
-      }
-
-      startAnalysis(tab.url);
-
-      const response = await MessagingService.sendToActiveTab<any, AnalysisResult>(
-        'ANALYZE_PAGE',
-        { url: tab.url, includeAI: useAI, includeWhois: useWhoisVerification }
-      );
-
-      if (response.success && response.data) {
-        console.log('✅ Analysis complete, caching result for:', tab.url);
-        if (isValidAnalysisResult(response.data)) {
-          setAnalysisResult(response.data);
-          completeAnalysis();
-          // Show notification for risky sites
-          showRiskNotification(response.data);
-        } else {
-          console.log('ℹ️ Non-final response received; waiting for cache/storage update');
-        }
-        
-        // Cache the result with pageType from the analysis
-        const pageType = response.data.pageType || 'other';
-        const cached = await StorageService.cacheAnalysis(tab.url, pageType, response.data);
-        console.log('💾 Cache saved:', cached);
-        
-      } else {
-        setError(createErrorFromMessage(response.error || 'Website analysis failed - content script error'));
-      }
-    } catch (error) {
-      setError(createErrorFromMessage(error));
-    } finally {
+    setIsUpdating(true);
+    setIsFromCache(false); // Reset cache flag for fresh analysis
+    
+    const tab = await MessagingService.getActiveTab();
+    if (!tab?.url) {
+      setError(createErrorFromMessage('No active browser tab found - please make sure you have a website open'));
       setIsUpdating(false);
+      return;
     }
+
+    // If forcing refresh, clear cache and current results
+    if (force) {
+      await StorageService.clearCachedAnalysis(tab.url);
+      setAnalysisResult(null); // Clear current results to show loading state
+    }
+
+    startAnalysis(tab.url);
+
+    // Start analysis asynchronously - don't wait for response since results come via cross-tab sync
+    MessagingService.sendToActiveTab<any, AnalysisResult>(
+      'ANALYZE_PAGE',
+      { url: tab.url, includeAI: useAI, includeWhois: useWhoisVerification }
+    ).then((response) => {
+      if (response.success && response.data) {
+        console.log('✅ Analysis response received, but results will come via cross-tab sync');
+      } else {
+        console.warn('⚠️ Analysis request failed:', response.error);
+        completeAnalysis(); // Reset loading state on failure
+      }
+    }).catch((error) => {
+      console.error('❌ Analysis request error:', error);
+      completeAnalysis(); // Reset loading state on error
+    });
+    
+    // Reset the update lock since we're not waiting for completion
+    setIsUpdating(false);
   };
 
   const handleToggleAnnotations = async () => {
@@ -628,7 +671,7 @@ function App() {
 
   return (
     <div className="w-[420px] min-h-[600px] bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-700 dark:from-slate-800 dark:via-slate-700 dark:to-slate-800">
-        <div className="h-full flex flex-col bg-white dark:bg-slate-800">
+        <div className="h-full flex flex-col bg-white dark:bg-slate-800 rounded-b-xl">
         <div className="bg-gradient-to-r from-blue-700 via-indigo-700 to-purple-800 dark:from-slate-800 dark:via-slate-700 dark:to-slate-800 px-5 py-4 text-white shadow-xl">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -646,7 +689,7 @@ function App() {
           </div>
         </div>
 
-        <div className="flex-1 flex flex-col overflow-hidden">
+        <div className="flex-1 flex flex-col">
           {error && (
             <div className="mx-4 mt-4 animate-slideUp">
               <div className={`border-2 rounded-xl p-4 shadow-sm ${
@@ -686,7 +729,7 @@ function App() {
             </div>
           )}
 
-          {isInitializing && !analysisResult && !error && (
+          {isCheckingCache && !analysisResult && !partialResult && !error && (
             <div className="flex-1 flex items-center justify-center p-6">
               <div className="text-center space-y-4 animate-fadeIn">
                 <div className="w-20 h-20 mx-auto bg-gradient-to-br from-blue-100 to-purple-100 rounded-full flex items-center justify-center shadow-lg">
@@ -707,7 +750,7 @@ function App() {
             </div>
           )}
 
-          {!analysisResult && !isLoading && !isInitializing && (
+          {!analysisResult && !partialResult && !isLoading && !isCheckingCache && (
             <div className="flex-1 flex items-center justify-center p-6">
               <div className="text-center space-y-4 animate-scaleIn">
                 <div className="w-24 h-24 mx-auto bg-gradient-to-br from-blue-100 to-purple-100 rounded-full flex items-center justify-center shadow-lg">
