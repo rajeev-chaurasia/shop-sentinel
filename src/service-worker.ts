@@ -594,6 +594,13 @@ const messageHandlers = {
       throw error;
     }
   },
+
+  /**
+   * Handle partial analysis results (forwarded to popup via runtime messaging)
+   */
+  PARTIAL_ANALYSIS_RESULT: async (_payload: any): Promise<any> => {
+    return { success: true, acknowledged: true };
+  },
 };
 
 /**
@@ -941,7 +948,6 @@ class BackgroundTaskManager {
   initialize(): void {
     this.startMaintenanceTasks();
     this.startCacheCleanup();
-    this.setupNetworkListeners();
     this.processRetryQueue();
   }
 
@@ -972,19 +978,20 @@ class BackgroundTaskManager {
   }
 
   /**
-   * Set up network status listeners
+   * Handle network coming online
    */
-  private setupNetworkListeners(): void {
-    self.addEventListener('online', () => {
-      console.log('🌐 Network connection restored');
-      this.isOnline = true;
-      this.processRetryQueue();
-    });
+  handleNetworkOnline(): void {
+    console.log('🌐 Network connection restored');
+    this.isOnline = true;
+    this.processRetryQueue();
+  }
 
-    self.addEventListener('offline', () => {
-      console.log('📴 Network connection lost');
-      this.isOnline = false;
-    });
+  /**
+   * Handle network going offline
+   */
+  handleNetworkOffline(): void {
+    console.log('📴 Network connection lost');
+    this.isOnline = false;
   }
 
   /**
@@ -1222,6 +1229,17 @@ async function initializeBackgroundTasks(): Promise<void> {
 self.addEventListener('beforeunload', () => {
   console.log('🛑 Shop Sentinel service worker shutting down');
   BackgroundTaskManager.getInstance().shutdown();
+});
+
+// Network status listeners (must be added at top level to avoid warnings)
+self.addEventListener('online', () => {
+  console.log('🌐 Network connection restored');
+  BackgroundTaskManager.getInstance().handleNetworkOnline();
+});
+
+self.addEventListener('offline', () => {
+  console.log('📴 Network connection lost');
+  BackgroundTaskManager.getInstance().handleNetworkOffline();
 });
 
 console.log('🛡️ Shop Sentinel service worker loaded with enhanced background processing');
