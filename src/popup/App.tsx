@@ -4,6 +4,7 @@ import { MessagingService } from '../services/messaging';
 import { StorageService } from '../services/storage';
 import { cacheService } from '../services/cache';
 import { crossTabSync } from '../services/crossTabSync';
+import { PolicyDetectionService } from '../services/policyDetection';
 import type { AnalysisResult } from '../types';
 import { RiskMeter, ReasonsList, PolicySummary } from '../components';
 import { createErrorFromMessage } from '../types/errors';
@@ -15,15 +16,19 @@ function App() {
   const [isFromCache, setIsFromCache] = useState(false);
   const [pollInterval, setPollInterval] = useState<number | null>(null);
   const [annotationsVisible, setAnnotationsVisible] = useState(false);
-  const [isUpdating, setIsUpdating] = useState(false); // Prevent race conditions
+  const [isUpdating, setIsUpdating] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   
-  // Additional settings state
+  const [isPolicyPage, setIsPolicyPage] = useState(false);
+  const [policyType, setPolicyType] = useState<string>('');
+  const [policyAnalysis, setPolicyAnalysis] = useState<any>(null);
+  const [isAnalyzingPolicy, setIsAnalyzingPolicy] = useState(false);
+  
   const [theme, setTheme] = useState<'light' | 'dark' | 'auto'>('auto');
   const [notifications, setNotifications] = useState(false);
   
-  const [operationLock, setOperationLock] = useState(false); // Global lock for all operations
-  const [isCheckingCache, setIsCheckingCache] = useState(false); // Show cache checking state
+  const [operationLock, setOperationLock] = useState(false);
+  const [isCheckingCache, setIsCheckingCache] = useState(false);
   
   const {
     currentUrl,
@@ -82,6 +87,51 @@ function App() {
       console.log(`✅ Icon update sent to content script: ${riskLevel} (${badgeText})`);
     } catch (error) {
       console.error('❌ Failed to update icon for cached result:', error);
+    }
+  };
+
+  // Check if current page is a policy page
+  const checkPolicyPage = async () => {
+    try {
+      const pageInfo = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+      if (pageInfo?.data?.isPolicyPage) {
+        setIsPolicyPage(true);
+        setPolicyType(pageInfo.data.policyType || 'policy');
+        console.log(`📄 Policy page detected: ${pageInfo.data.policyType} (confidence: ${pageInfo.data.policyConfidence}%)`);
+      } else {
+        setIsPolicyPage(false);
+        setPolicyType('');
+      }
+    } catch (error) {
+      console.error('❌ Failed to check policy page:', error);
+      setIsPolicyPage(false);
+      setPolicyType('');
+    }
+  };
+
+  // Analyze policy page using AI
+  const analyzePolicy = async () => {
+    if (isAnalyzingPolicy || !isPolicyPage) return;
+
+    setIsAnalyzingPolicy(true);
+    setPolicyAnalysis(null);
+
+    try {
+      console.log('🤖 Starting policy analysis...');
+      const result = await MessagingService.sendToActiveTab('ANALYZE_POLICY');
+      
+      if (result?.data?.status === 'success') {
+        setPolicyAnalysis(result.data);
+        console.log('✅ Policy analysis completed successfully');
+      } else {
+        console.error('❌ Policy analysis failed:', result?.data?.message);
+        setError(createErrorFromMessage(result?.data?.message || 'Policy analysis failed'));
+      }
+    } catch (error) {
+      console.error('❌ Policy analysis error:', error);
+      setError(createErrorFromMessage(error instanceof Error ? error.message : 'Policy analysis failed'));
+    } finally {
+      setIsAnalyzingPolicy(false);
     }
   };
 
@@ -429,6 +479,9 @@ function App() {
 
       // Continue with full analysis check in background
       await fullCheckPromise;
+
+      // Check if current page is a policy page
+      await checkPolicyPage();
 
       // Final cleanup
       setIsCheckingCache(false);
@@ -779,6 +832,77 @@ function App() {
                     </span>
                   )}
                 </button>
+
+                {/* Policy Analysis Option - Only show when on policy page */}
+                {isPolicyPage && (
+                  <div className="mt-6 p-4 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900 dark:to-emerald-800 border-2 border-green-300 dark:border-green-600 rounded-xl shadow-sm">
+                    <div className="text-center space-y-3">
+                      <div className="flex items-center justify-center gap-2">
+                        <span className="text-2xl">📄</span>
+                        <h3 className="text-lg font-bold text-green-800 dark:text-green-200">
+                          Policy Page Detected
+                        </h3>
+                      </div>
+                      <p className="text-sm text-green-700 dark:text-green-300">
+                        This appears to be a <strong>{PolicyDetectionService.getPolicyTypeName(policyType as any)}</strong> page. Get AI-powered insights about key terms and conditions.
+                      </p>
+                      
+                      {!policyAnalysis ? (
+                        <button 
+                          onClick={analyzePolicy} 
+                          disabled={isAnalyzingPolicy}
+                          className="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-bold py-3 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:scale-105 disabled:transform-none disabled:opacity-50"
+                        >
+                          {isAnalyzingPolicy ? (
+                            <span className="flex items-center justify-center gap-2">
+                              <span className="animate-spin">🤖</span>
+                              <span>Analyzing Policy...</span>
+                            </span>
+                          ) : (
+                            <span className="flex items-center justify-center gap-2">
+                              <span>🤖</span>
+                              <span>Analyze Policy</span>
+                            </span>
+                          )}
+                        </button>
+                      ) : (
+                        <div className="text-left space-y-2">
+                          <h4 className="font-bold text-green-800 dark:text-green-200">AI Summary:</h4>
+                          <div className="space-y-1">
+                            {policyAnalysis.policySummary?.summary?.map((point: string, idx: number) => (
+                              <div key={idx} className="text-sm text-green-700 dark:text-green-300 flex items-start gap-2">
+                                <span className="text-green-600 dark:text-green-400 flex-shrink-0">•</span>
+                                <span>{point}</span>
+                              </div>
+                            ))}
+                          </div>
+                          
+                          {policyAnalysis.policySummary?.keyPoints?.returnWindow && (
+                            <div className="mt-2 p-2 bg-white dark:bg-green-800 bg-opacity-60 rounded-lg">
+                              <span className="text-sm font-semibold text-green-800 dark:text-green-200">
+                                ⏱️ Return Window: {policyAnalysis.policySummary.keyPoints.returnWindow}
+                              </span>
+                            </div>
+                          )}
+                          
+                          {policyAnalysis.policySummary?.riskFactors?.length > 0 && (
+                            <div className="mt-2">
+                              <h5 className="text-sm font-bold text-red-700 dark:text-red-300">⚠️ Important Conditions:</h5>
+                              <ul className="text-xs text-red-600 dark:text-red-400 space-y-1">
+                                {policyAnalysis.policySummary.riskFactors.map((risk: string, idx: number) => (
+                                  <li key={idx} className="flex items-start gap-1">
+                                    <span>•</span>
+                                    <span>{risk}</span>
+                                  </li>
+                                ))}
+                              </ul>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
               </div>
             </div>
           )}
