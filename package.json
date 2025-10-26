@@ -5,6 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "dev:full": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
+    "dev:backend": "cd backend && npm run dev",
+    "dev:frontend": "vite",
+    "test:backend": "node test-backend.js",
     "build": "tsc && vite build && npm run copy-files && node organize-build.js",
     "copy-files": "cp manifest.json dist/ && cp -r public/icons dist/",
     "preview": "vite preview"
@@ -24,6 +28,7 @@
     "@types/react-dom": "^19.2.1",
     "@vitejs/plugin-react": "^5.0.4",
     "autoprefixer": "^10.4.21",
+    "concurrently": "^9.2.1",
     "postcss": "^8.5.6",
     "react": "^19.2.0",
     "react-dom": "^19.2.0",

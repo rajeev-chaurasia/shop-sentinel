@@ -2,16 +2,25 @@
 
 A powerful Chrome Extension built with modern web technologies to provide a seamless browser extension experience.
 
-## Key Features
+### Features
 
-- **Modern Tech Stack**: Built with React 19, Vite, and TailwindCSS for fast development and optimal performance
-- **Manifest V3**: Uses the latest Chrome Extension Manifest V3 specification for enhanced security and performance
-- **TypeScript Support**: Fully typed codebase for better developer experience and code quality
-- **Content Scripts**: Interact with web pages directly through content scripts
-- **Storage API**: Persist data using Chrome's storage API with a clean service layer
-- **Messaging System**: Built-in messaging service for communication between extension components
-- **Hot Module Replacement**: Fast refresh during development with Vite's HMR
-- **Tailwind CSS**: Utility-first CSS framework for rapid UI development
+- **AI-Powered Analysis**: Uses Chrome's built-in Gemini Nano model for intelligent dark pattern detection
+- **Domain Trust Check**: Optional WHOIS API integration to verify website age, registrar, and legitimacy
+- **Real-time Analysis**: Progressive loading with live updates during analysis
+- **Cross-tab Synchronization**: Share analysis results across browser tabs
+- **Comprehensive Security Checks**: HTTPS validation, mixed content detection, and suspicious URL patterns
+- **Policy Analysis**: Automated detection of return policies, shipping terms, and refund policies
+- **Page Annotations**: Highlight detected issues directly on web pages
+- **Offline Support**: Graceful degradation when AI features are unavailable
+
+### Feature Flags
+
+The extension includes feature flags to control resource-intensive operations:
+
+- **AI Analysis**: Enable/disable AI-powered pattern detection (default: enabled)
+- **Domain Trust Check**: Enable/disable WHOIS API calls for comprehensive domain verification (default: disabled)
+
+When Domain Trust Check is disabled, domain analysis is skipped entirely to save processing time and avoid showing incomplete data.
 
 ## Tech Stack
 
@@ -47,6 +56,59 @@ shop-sentinel/
 
 ```
 
+## Backend Server
+
+Shop Sentinel includes a proxy backend server that handles external API calls (like WHOIS lookups) to keep API keys secure and avoid CORS issues.
+
+### Backend Features
+
+- **WHOIS API Proxy**: Securely handles WHOIS API calls with API keys
+- **CORS Protection**: Configured to only accept requests from the Chrome extension
+- **Input Validation**: Validates domain formats and request parameters
+- **Error Handling**: Comprehensive error handling with sanitized responses
+
+### Setting Up the Backend
+
+1. **Navigate to backend directory:**
+   ```bash
+   cd backend
+   ```
+
+2. **Install dependencies:**
+   ```bash
+   npm install
+   ```
+
+3. **Configure environment:**
+   ```bash
+   cp .env.example .env
+   # Edit .env and add your WHOIS API key
+   ```
+
+4. **Get WHOIS API Key:**
+   - Sign up at [APILayer WHOIS API](https://apilayer.com/marketplace/whois-api)
+   - Add your API key to the `.env` file as `WHOIS_API_KEY`
+
+5. **Start the backend server:**
+   ```bash
+   # Development mode (auto-restart)
+   npm run dev
+
+   # Production mode
+   npm start
+   ```
+
+The backend will run on `http://localhost:3001` by default.
+
+### Testing the Backend
+
+To test that the backend server is working correctly:
+```bash
+npm run test:backend
+```
+
+This will test both the health endpoint and WHOIS API functionality.
+
 ## Getting Started
 
 ### Prerequisites
@@ -70,23 +132,29 @@ npm install
 
 ### Development
 
-1. Build the extension:
-```bash
-npm run build
-```
+1. **Start the backend server** (in a separate terminal):
+   ```bash
+   cd backend
+   npm run dev
+   ```
 
-2. Load the unpacked extension in Chrome:
+2. **Build the extension:**
+   ```bash
+   npm run build
+   ```
+
+3. **Load the unpacked extension in Chrome:**
    - Open Chrome and navigate to `chrome://extensions/`
    - Enable "Developer mode" using the toggle in the top right corner
    - Click "Load unpacked" button
    - Select the `dist` folder from your project directory
    - The extension should now appear in your Chrome toolbar
 
-3. For development with hot reload:
-```bash
-npm run dev
-```
-Note: After making changes, you'll need to rebuild (`npm run build`) and reload the extension in Chrome.
+4. **For full development (backend + frontend):**
+   ```bash
+   npm run dev:full
+   ```
+   This runs both the backend server and frontend development server simultaneously.
 
 ### Building for Production
 
@@ -99,10 +167,29 @@ The built extension will be in the `dist` folder, ready to be packaged and distr
 
 ## Usage
 
-1. Click the extension icon in your Chrome toolbar to open the popup
-2. The popup displays a sample counter interface built with React and TailwindCSS
-3. Content scripts automatically run on web pages (check the browser console)
-4. Use the services in `src/services/` to interact with Chrome APIs
+## Usage
+
+1. **Click the extension icon** in your browser toolbar to open the popup
+2. **Configure feature flags** (optional):
+   - **AI-Powered Analysis**: Enable for intelligent pattern detection using Chrome's AI model
+   - **Domain Trust Check**: Enable for comprehensive website legitimacy verification using WHOIS data
+3. **Click "Scan Page"** to analyze the current website
+4. **View results** in the organized tabs (Overview, Issues, Policies)
+5. **Use annotations** to highlight issues directly on the page
+
+### Feature Flag Details
+
+- **AI Analysis** (Default: ON): Uses Chrome's built-in AI model for advanced pattern detection. First use downloads the model.
+- **Domain Trust Check** (Default: OFF): Performs comprehensive domain verification including age, registrar, and registration details. When disabled, domain analysis is skipped entirely to save time and resources.
+
+### Analysis Results
+
+The extension provides comprehensive analysis including:
+- **Security Status**: HTTPS validation and mixed content detection
+- **Risk Assessment**: Overall risk score with visual indicators
+- **Issue Detection**: Dark patterns, deceptive practices, and policy concerns
+- **Policy Analysis**: Return policies, shipping terms, and refund conditions
+- **Domain Information**: Age, registrar, and registration details (only when Domain Trust Check is enabled)
 
 ## Development Tips
 

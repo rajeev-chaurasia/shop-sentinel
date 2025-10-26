@@ -28,38 +28,38 @@ export function ReasonsList({
 
   const severityStyles = {
     safe: {
-      bg: 'bg-gradient-to-br from-green-50 via-green-100 to-emerald-100',
-      border: 'border-green-400',
-      text: 'text-green-900',
-      badge: 'bg-green-300 text-green-900',
+      bg: 'bg-gradient-to-br from-green-50 via-green-100 to-emerald-100 dark:from-slate-700 dark:via-slate-600 dark:to-slate-700',
+      border: 'border-green-400 dark:border-slate-500',
+      text: 'text-green-900 dark:text-green-200',
+      badge: 'bg-green-300 dark:bg-slate-600 text-green-900 dark:text-green-200',
       icon: '✅',
     },
     low: {
-      bg: 'bg-gradient-to-br from-yellow-50 via-yellow-100 to-amber-100',
-      border: 'border-yellow-400',
-      text: 'text-yellow-900',
-      badge: 'bg-yellow-300 text-yellow-900',
+      bg: 'bg-gradient-to-br from-yellow-50 via-yellow-100 to-amber-100 dark:from-slate-700 dark:via-slate-600 dark:to-slate-700',
+      border: 'border-yellow-400 dark:border-slate-500',
+      text: 'text-yellow-900 dark:text-yellow-200',
+      badge: 'bg-yellow-300 dark:bg-slate-600 text-yellow-900 dark:text-yellow-200',
       icon: '⚠️',
     },
     medium: {
-      bg: 'bg-gradient-to-br from-orange-50 via-orange-100 to-orange-200',
-      border: 'border-orange-400',
-      text: 'text-orange-900',
-      badge: 'bg-orange-300 text-orange-900',
+      bg: 'bg-gradient-to-br from-orange-50 via-orange-100 to-orange-200 dark:from-slate-700 dark:via-slate-600 dark:to-slate-700',
+      border: 'border-orange-400 dark:border-slate-500',
+      text: 'text-orange-900 dark:text-orange-200',
+      badge: 'bg-orange-300 dark:bg-slate-600 text-orange-900 dark:text-orange-200',
       icon: '⚠️',
     },
     high: {
-      bg: 'bg-gradient-to-br from-red-50 via-red-100 to-red-200',
-      border: 'border-red-400',
-      text: 'text-red-900',
-      badge: 'bg-red-300 text-red-900',
+      bg: 'bg-gradient-to-br from-red-50 via-red-100 to-red-200 dark:from-slate-700 dark:via-slate-600 dark:to-slate-700',
+      border: 'border-red-400 dark:border-slate-500',
+      text: 'text-red-900 dark:text-red-200',
+      badge: 'bg-red-300 dark:bg-slate-600 text-red-900 dark:text-red-200',
       icon: '🚨',
     },
     critical: {
-      bg: 'bg-gradient-to-br from-red-100 via-red-200 to-red-300',
-      border: 'border-red-500',
-      text: 'text-red-950',
-      badge: 'bg-red-400 text-red-950',
+      bg: 'bg-gradient-to-br from-red-100 via-red-200 to-red-300 dark:from-slate-700 dark:via-slate-600 dark:to-slate-700',
+      border: 'border-red-500 dark:border-slate-500',
+      text: 'text-red-950 dark:text-red-200',
+      badge: 'bg-red-400 dark:bg-slate-600 text-red-950 dark:text-red-200',
       icon: '🔴',
     },
   };
@@ -82,8 +82,8 @@ export function ReasonsList({
     return (
       <div className={`text-center py-12 ${className}`}>
         <div className="text-6xl mb-3 animate-bounce">✅</div>
-        <p className="text-lg font-semibold text-gray-800 mb-1">All Clear!</p>
-        <p className="text-sm text-gray-600">No security issues detected</p>
+        <p className="text-lg font-semibold text-gray-800 dark:text-gray-200 mb-1">All Clear!</p>
+        <p className="text-sm text-gray-600 dark:text-gray-400">No security issues detected</p>
       </div>
     );
   }
@@ -146,7 +146,7 @@ export function ReasonsList({
 
               {/* Source badge */}
               <div className="flex items-center gap-2 mt-3">
-                <span className="text-xs px-2.5 py-1 rounded-full bg-white bg-opacity-70 font-medium shadow-sm">
+                <span className="text-xs px-2.5 py-1 rounded-full bg-white dark:bg-gray-600 bg-opacity-70 font-medium shadow-sm">
                   {signal.source === 'ai' ? '🤖 AI Detection' : '🔍 Heuristic Analysis'}
                 </span>
               </div>
@@ -158,8 +158,8 @@ export function ReasonsList({
       {/* Show more indicator */}
       {hasMore && (
         <div className="mt-4 text-center">
-          <div className="inline-block px-4 py-2 bg-gray-100 rounded-full border border-gray-300 shadow-sm">
-            <p className="text-sm font-medium text-gray-700">
+          <div className="inline-block px-4 py-2 bg-gray-100 dark:bg-gray-700 rounded-full border border-gray-300 dark:border-gray-600 shadow-sm">
+            <p className="text-sm font-medium text-gray-700 dark:text-gray-300">
               +{signals.length - maxItems!} more issue{signals.length - maxItems! > 1 ? 's' : ''}
             </p>
           </div>

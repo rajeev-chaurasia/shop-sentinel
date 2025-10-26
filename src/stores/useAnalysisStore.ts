@@ -103,6 +103,7 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
   setAnalysisResult: (result: AnalysisResult | null) => {
     set({
       analysisResult: result,
+      partialResult: null, // Clear partial results when final result is available
       lastAnalyzedAt: result ? Date.now() : null,
       analysisProgress: result ? 100 : 0,
     });

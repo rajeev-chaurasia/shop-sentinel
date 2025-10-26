@@ -352,7 +352,7 @@ async function handleAnalyzePage(payload: any) {
       { security, domain, payment },
       { contact, policies }
     ] = await Promise.all([
-      runDomainSecurityChecks(),
+      runDomainSecurityChecks(payload?.includeWhois),
       runContentPolicyChecks()
     ]);
 
@@ -460,6 +460,8 @@ async function handleAnalyzePage(payload: any) {
                 domainAgeYears: domain.ageInDays ? Math.floor(domain.ageInDays / 365) : null,
                 domainStatus: domain.status,
                 domainRegistrar: domain.registrar,
+                // Indicate whether domain checking was enabled
+                domainCheckEnabled: payload?.includeWhois || false,
               })
             });
 

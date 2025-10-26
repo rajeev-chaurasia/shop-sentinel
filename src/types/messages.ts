@@ -32,6 +32,7 @@ export interface MessageResponse<T = any> {
 export interface AnalyzePagePayload {
   url: string;
   includeAI?: boolean;
+  includeWhois?: boolean;
   deepScan?: boolean;
 }
 
