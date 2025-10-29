@@ -9,6 +9,7 @@ import type { AnalysisResult } from '../types';
 import { RiskMeter, ReasonsList, PolicySummary } from '../components';
 import { createErrorFromMessage } from '../types/errors';
 import { TIMINGS } from '../config/constants';
+import { getApiUrl } from '../config/env';
 
 function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'reasons' | 'policies'>('overview');
@@ -535,6 +536,7 @@ function App() {
   };
 
   // Full cache loading with page type detection and analysis state checking
+  // Also checks backend database for persistent cache
   const loadCachedAnalysisFull = async () => {
     return withOperationLock(async () => {
       try {
@@ -570,21 +572,59 @@ function App() {
           return;
         }
 
-        // Check cache only for this specific page type
-        console.log(`🔍 Checking cache for: ${tab.url} (${pageType})`);
-        const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
+        // STEP 1: Check Chrome storage cache (fast, local)
+        console.log(`🔍 Checking Chrome storage cache for: ${tab.url} (${pageType})`);
+        const chromeCached = await StorageService.getCachedAnalysis(tab.url, pageType);
         
-        if (cached && isValidAnalysisResult(cached)) {
+        if (chromeCached && isValidAnalysisResult(chromeCached)) {
           // Only update if we don't already have a result from fast loading
           if (!analysisResult) {
-            console.log(`✅ Cache hit for ${pageType}:`, cached);
-            setAnalysisResult(cached);
+            console.log(`✅ Chrome cache hit for ${pageType}:`, chromeCached);
+            setAnalysisResult(chromeCached);
             setIsFromCache(true);
           }
-        } else {
-          console.log(`❌ No cache found for ${pageType} - ready to analyze`);
-          setIsFromCache(false);
+          return; // Found in Chrome cache, stop looking
         }
+
+        // STEP 2: Check backend database cache (persistent, survives browser restart)
+        console.log(`🔍 Checking backend cache for: ${tab.url} (${pageType})`);
+        try {
+          const backendCacheUrl = getApiUrl(`/api/jobs/cached?url=${encodeURIComponent(tab.url)}&pageType=${encodeURIComponent(pageType)}`);
+          const backendResponse = await fetch(backendCacheUrl, { 
+            method: 'GET',
+            headers: { 'Content-Type': 'application/json' }
+          });
+          
+          if (backendResponse.ok) {
+            const backendData = await backendResponse.json();
+            
+            if (backendData.cached && backendData.analysis?.result_data) {
+              const backendResult = backendData.analysis.result_data;
+              
+              // Validate the result from backend
+              if (isValidAnalysisResult(backendResult)) {
+                console.log(`✅ Backend cache hit for ${pageType} (${backendData.cacheAge || 0}s old):`, backendResult);
+                
+                // Also store in Chrome cache for faster next time
+                await cacheService.set(tab.url, pageType, backendResult);
+                
+                // Only update if we don't already have a result from fast loading
+                if (!analysisResult) {
+                  setAnalysisResult(backendResult);
+                  setIsFromCache(true);
+                }
+                return; // Found in backend cache, stop looking
+              }
+            }
+          }
+        } catch (backendError) {
+          // Backend cache check failed - that's okay, continue to ready for analysis
+          console.warn('⚠️ Backend cache check failed:', backendError);
+        }
+
+        // STEP 3: No cache found anywhere - ready for fresh analysis
+        console.log(`❌ No cache found for ${pageType} - ready to analyze`);
+        setIsFromCache(false);
       } catch (error) {
         console.error('Failed to load cache:', error);
         setError(createErrorFromMessage('Failed to load cached analysis - storage access error'));
