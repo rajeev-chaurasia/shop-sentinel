@@ -7,9 +7,7 @@ import {
   createErrorResponse,
   isMessageResponse,
 } from '../types/messages';
-
-const MESSAGE_TIMEOUT = 30000;
-const MAX_RETRIES = 2;
+import { TIMINGS, RETRY_CONFIG } from '../config/constants';
 
 export class MessagingError extends Error {
   constructor(
@@ -23,7 +21,7 @@ export class MessagingError extends Error {
 
 async function sendMessageWithTimeout<T>(
   sender: () => Promise<any>,
-  timeout: number = MESSAGE_TIMEOUT
+  timeout: number = TIMINGS.MESSAGE_TIMEOUT
 ): Promise<MessageResponse<T>> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
@@ -66,7 +64,7 @@ export const MessagingService = {
     payload?: TPayload,
     options: { timeout?: number; retries?: number } = {}
   ): Promise<MessageResponse<TResponse>> {
-    const { timeout = MESSAGE_TIMEOUT, retries = MAX_RETRIES } = options;
+    const { timeout = TIMINGS.MESSAGE_TIMEOUT, retries = RETRY_CONFIG.MAX_RETRIES } = options;
     
     let lastError: Error | null = null;
     
@@ -92,7 +90,7 @@ export const MessagingService = {
         }
         
         if (attempt < retries) {
-          await new Promise((resolve) => setTimeout(resolve, 500 * (attempt + 1)));
+          await new Promise((resolve) => setTimeout(resolve, RETRY_CONFIG.getBackoffDelay(attempt)));
         }
       }
     }
@@ -106,7 +104,7 @@ export const MessagingService = {
     payload?: TPayload,
     options: { timeout?: number } = {}
   ): Promise<MessageResponse<TResponse>> {
-    const { timeout = MESSAGE_TIMEOUT } = options;
+    const { timeout = TIMINGS.MESSAGE_TIMEOUT } = options;
     
     try {
       const message = createMessage(action, payload);
@@ -132,7 +130,7 @@ export const MessagingService = {
     payload?: TPayload,
     options: { timeout?: number } = {}
   ): Promise<MessageResponse<TResponse>> {
-    const { timeout = MESSAGE_TIMEOUT } = options;
+    const { timeout = TIMINGS.MESSAGE_TIMEOUT } = options;
     
     try {
       const message = createMessage(action, payload);
@@ -165,7 +163,7 @@ export const MessagingService = {
 
   async isTabReady(tabId: number): Promise<boolean> {
     try {
-      const response = await this.sendToTab(tabId, 'PING', undefined, { timeout: 1000 });
+      const response = await this.sendToTab(tabId, 'PING', undefined, { timeout: TIMINGS.PING_TIMEOUT });
       return response.success;
     } catch {
       return false;

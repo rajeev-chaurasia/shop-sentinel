@@ -1,95 +1,120 @@
-# Shop Sentinel Backend Server
+# Shop Sentinel Backend
 
-A proxy backend server for the Shop Sentinel Chrome extension that handles external API calls (like WHOIS lookups for Domain Trust Check) to keep API keys secure and avoid CORS issues.
+Job coordination server for the Shop Sentinel extension. Tracks analysis jobs, provides real-time WebSocket updates, and stores results in PostgreSQL.
 
-## Features
+## Overview
 
-- **WHOIS API Proxy**: Securely handles WHOIS API calls for Domain Trust Check feature
-- **CORS Protection**: Only allows requests from Chrome extensions and localhost
-- **Input Validation**: Validates domain formats before API calls
-- **Error Handling**: Comprehensive error handling with sanitized responses
+The backend handles:
+- Job creation and tracking
+- WebSocket updates for real-time progress
+- Result persistence across sessions
+- WHOIS API proxy for domain verification
+- Webhook delivery for analysis results
 
 ## Setup
 
-1. **Install dependencies:**
-   ```bash
-   cd backend
-   npm install
-   ```
+### 1. Install Dependencies
 
-2. **Configure environment:**
-   ```bash
-   cp .env.example .env
-   # Edit .env and add your WHOIS API key
-   ```
+```bash
+npm install
+```
 
-3. **Get WHOIS API Key:**
-   - Sign up at [APILayer WHOIS API](https://apilayer.com/marketplace/whois-api)
-   - Add your API key to the `.env` file
+### 2. Configure Environment
 
-4. **Start the server:**
-   ```bash
-   # Development mode (with auto-restart)
-   npm run dev
+Copy `.env.example` to `.env`:
 
-   # Production mode
-   npm start
-   ```
+```bash
+cp .env.example .env
+```
+
+Edit `.env` with your values:
+
+```env
+DATABASE_URL=postgresql://user:pass@localhost/shop_sentinel
+WHOIS_API_KEY=your_api_key_here
+PORT=3002
+NODE_ENV=development
+```
+
+### 3. Database
+
+```bash
+# Run migrations to create tables
+node scripts/migrate.js
+```
+
+Or manually run `schema.sql` in your PostgreSQL client.
+
+### 4. Start Server
+
+```bash
+# Development (auto-reload)
+npm run dev
+
+# Production
+npm start
+```
+
+Server runs on `http://localhost:3002`
 
 ## API Endpoints
 
-### Health Check
-```
-GET /health
-```
-Returns server status and timestamp.
+### Jobs
+- `POST /api/jobs` - Create new job
+- `GET /api/jobs/:jobId` - Get job status
+- `PUT /api/jobs/:jobId` - Update job
+- `POST /api/jobs/:jobId/complete` - Mark complete
+- `POST /api/jobs/:jobId/progress` - Update progress
 
-### WHOIS Lookup
-```
-GET /api/whois/:domain
-```
-Fetches WHOIS information for the specified domain.
+### Health
+- `GET /health` - Server health check
 
-**Example:**
+## WebSocket
+
+Connect at `ws://localhost:3002` for real-time updates:
+
+```javascript
+const ws = new WebSocket('ws://localhost:3002');
+
+ws.send(JSON.stringify({
+  type: 'subscribe_job',
+  jobId: 'your-job-id'
+}));
+
+ws.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Update:', data);
+};
+```
+
+## Testing
+
 ```bash
-curl http://localhost:3001/api/whois/example.com
+# Health check
+curl http://localhost:3002/health
+
+# Create job
+curl -X POST http://localhost:3002/api/jobs \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com"}'
+
+# Update progress
+curl -X POST http://localhost:3002/api/jobs/{jobId}/progress \
+  -H "Content-Type: application/json" \
+  -d '{"progress": 50, "message": "Analyzing..."}'
+
+# Complete job
+curl -X POST http://localhost:3002/api/jobs/{jobId}/complete \
+  -H "Content-Type: application/json" \
+  -d '{"result": {"risk": "low"}}'
 ```
 
-**Response:**
-```json
-{
-  "success": true,
-  "domain": "example.com",
-  "data": {
-    "creation_date": "1992-01-01 00:00:00",
-    "registrar": "IANA",
-    "expiration_date": "2026-08-13 04:00:00",
-    ...
-  },
-  "timestamp": "2025-10-25T10:30:00.000Z"
-}
-```
+## Database Schema
 
-## Security Features
+See `schema.sql` for complete schema. Main tables:
 
-- **CORS protection**: Only allows requests from Chrome extensions and localhost
-- **Helmet security headers**: Protects against common web vulnerabilities
-- **Input validation**: Validates domain format before API calls
-- **Error handling**: Sanitized error responses without exposing sensitive information
-
-## Development
-
-The server includes:
-- Request logging
-- Error handling middleware
-- CORS configuration for Chrome extension
-- Environment-based configuration
-
-## Deployment
-
-For production deployment, ensure:
-- Set `NODE_ENV=production`
-- Use a process manager like PM2
-- Set up proper environment variables
-- Configure reverse proxy (nginx) if needed</content>
+- `jobs` - Analysis jobs
+- `job_results` - Job results
+- `webhooks` - Webhook configurations
+- `webhook_deliveries` - Webhook delivery history</content>
 <parameter name="filePath">/Users/maverickrajeev/Desktop/shop-sentinel/backend/README.md

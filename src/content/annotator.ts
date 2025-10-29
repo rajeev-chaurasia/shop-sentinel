@@ -268,25 +268,3 @@ window.addEventListener('resize', () => {
  *   ]
  * }
  */
-
-/**
- * Mock annotations for testing (TG-09 Development)
- * This will be removed when TG-07 is integrated
- */
-export const MOCK_ANNOTATIONS: AnnotationElement[] = [
-  {
-    selector: '.countdown, [class*="countdown"], [id*="countdown"]',
-    reason: 'False urgency - Countdown timer detected',
-    severity: 'high',
-  },
-  {
-    selector: 'button[class*="scarcity"], [class*="limited"], [class*="only-left"]',
-    reason: 'Artificial scarcity warning',
-    severity: 'medium',
-  },
-  {
-    selector: '[class*="popup"], [class*="modal"][class*="subscribe"]',
-    reason: 'Intrusive popup detected',
-    severity: 'low',
-  },
-];

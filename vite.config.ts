@@ -8,6 +8,9 @@ const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
 
 export default defineConfig({
+  define: {
+    'process.env': process.env,
+  },
   plugins: [react(), contentScriptPlugin()],
   build: {
     outDir: 'dist',

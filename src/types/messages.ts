@@ -11,7 +11,12 @@ export type MessageAction =
   | 'SET_TAB_STATE'
   | 'CLEAR_TAB_STATE'
   | 'GET_ALL_TAB_STATES'
-  | 'VALIDATE_SOCIAL_URLS';
+  | 'VALIDATE_SOCIAL_URLS'
+  | 'SUBMIT_BACKEND_JOB'
+  | 'GET_JOB_STATUS'
+  | 'GET_JOBS_LIST'
+  | 'CREATE_WEBHOOK'
+  | 'GET_BACKEND_SESSION';
 
 export interface BaseMessage {
   action: MessageAction;
@@ -61,6 +66,30 @@ export interface ValidateSocialUrlsPayload {
     url: string;
     location: 'footer' | 'header' | 'body' | 'unknown';
   }>;
+}
+
+export interface SubmitBackendJobPayload {
+  url: string;
+  options?: {
+    jobType?: 'standard' | 'priority' | 'deep';
+    includeAI?: boolean;
+    includeWhois?: boolean;
+  };
+}
+
+export interface GetJobStatusPayload {
+  jobId: string;
+}
+
+export interface GetJobsListPayload {
+  limit?: number;
+  offset?: number;
+}
+
+export interface CreateWebhookPayload {
+  url: string;
+  events: string[];
+  secret?: string;
 }
 
 export function createMessage<T = any>(

@@ -2,6 +2,36 @@ import { create } from 'zustand';
 import { AnalysisResult, PolicySummary } from '../types';
 import { AppError } from '../types/errors';
 
+/**
+ * FIX #3: State Persistence Functions
+ * Automatically persist store state to Chrome storage
+ */
+async function persistState(state: any, key: string) {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      await chrome.storage.local.set({ [key]: JSON.stringify(state) });
+      console.log(`✅ State persisted to ${key}`);
+    }
+  } catch (error) {
+    console.error(`Failed to persist state to ${key}:`, error);
+  }
+}
+
+async function rehydrateState(key: string): Promise<any | null> {
+  try {
+    if (typeof chrome !== 'undefined' && chrome.storage?.local) {
+      const result = await chrome.storage.local.get(key);
+      if (result[key]) {
+        console.log(`✅ State rehydrated from ${key}`);
+        return JSON.parse(result[key]);
+      }
+    }
+  } catch (error) {
+    console.error(`Failed to rehydrate state from ${key}:`, error);
+  }
+  return null;
+}
+
 interface AnalysisState {
   currentUrl: string | null;
   analysisResult: AnalysisResult | null;
@@ -13,6 +43,12 @@ interface AnalysisState {
   error: AppError | null;
   lastAnalyzedAt: number | null;
   analysisProgress: number;
+  
+  // Backend job progress tracking
+  backendJobId: string | null;
+  backendJobProgress: number;
+  backendJobStatus: 'idle' | 'pending' | 'processing' | 'completed' | 'failed';
+  backendJobMessage: string;
   
   // Enhanced AI-specific state
   aiState: {
@@ -42,6 +78,11 @@ interface AnalysisActions {
   setLoading: (isLoading: boolean) => void;
   reset: () => void;
   setCurrentUrl: (url: string) => void;
+  
+  // Backend job progress actions
+  setBackendJob: (jobId: string) => void;
+  updateBackendJobProgress: (progress: number, status?: string, message?: string) => void;
+  clearBackendJob: () => void;
   
   // Enhanced AI-specific actions
   setAIAvailable: (available: boolean) => void;
@@ -81,6 +122,13 @@ const initialState: AnalysisState = {
   error: null,
   lastAnalyzedAt: null,
   analysisProgress: 0,
+  
+  // Backend job progress
+  backendJobId: null,
+  backendJobProgress: 0,
+  backendJobStatus: 'idle',
+  backendJobMessage: '',
+  
   aiState: initialAIState,
 };
 
@@ -176,6 +224,39 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
   
   reset: () => {
     set(initialState);
+  },
+
+  // Backend job progress actions
+  setBackendJob: (jobId: string) => {
+    const newState = {
+      backendJobId: jobId,
+      backendJobProgress: 0,
+      backendJobStatus: 'pending' as const,
+      backendJobMessage: 'Job created'
+    };
+    set(newState);
+    persistState(get(), 'analysisStore'); // Auto-persist
+  },
+
+  updateBackendJobProgress: (progress: number, status?: string, message?: string) => {
+    const newState = {
+      backendJobProgress: Math.min(100, Math.max(0, progress)),
+      backendJobStatus: (status as any) || get().backendJobStatus,
+      backendJobMessage: message || get().backendJobMessage
+    };
+    set(newState);
+    persistState(get(), 'analysisStore'); // Auto-persist
+  },
+
+  clearBackendJob: () => {
+    const newState = {
+      backendJobId: null,
+      backendJobProgress: 0,
+      backendJobStatus: 'idle' as const,
+      backendJobMessage: ''
+    };
+    set(newState);
+    persistState(get(), 'analysisStore'); // Auto-persist
   },
 
   // Enhanced AI-specific actions
@@ -289,3 +370,32 @@ export const useAISignalsFound = () =>
 
 export const useEstimatedTimeRemaining = () =>
   useAnalysisStore((state) => state.aiState.estimatedTimeRemaining);
+
+/**
+ * FIX #3: Initialize store from persisted state
+ * Call this once on app startup to restore previous session
+ */
+export async function initializeAnalysisStore() {
+  try {
+    const persisted = await rehydrateState('analysisStore');
+    if (persisted) {
+      // Merge persisted state with current state (don't restore loading states)
+      useAnalysisStore.setState({
+        ...persisted,
+        isLoading: false,
+        isAnalyzing: false,
+        isSummarizingPolicy: false
+      });
+      console.log('✅ Analysis store initialized from persisted state');
+      return true;
+    }
+  } catch (error) {
+    console.error('Failed to initialize store:', error);
+  }
+  return false;
+}
+
+/**
+ * FIX #3: Export persistence functions for use in components
+ */
+export { persistState, rehydrateState };
