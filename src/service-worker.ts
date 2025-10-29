@@ -600,7 +600,7 @@ const messageHandlers = {
   },
 
   /**
-   * FIX #4: Handle backend job creation
+   * Handle backend job creation notification
    */
   BACKEND_JOB_CREATED: async (payload: {
     jobId: string;
@@ -627,7 +627,7 @@ const messageHandlers = {
   },
 
   /**
-   * FIX #4: Get backend job status
+   * Get backend job status
    */
   GET_BACKEND_JOB_STATUS: async (payload: {
     jobId: string;
@@ -650,7 +650,7 @@ const messageHandlers = {
   },
 
   /**
-   * FIX #4: Poll backend for job progress updates
+   * Poll backend for job progress updates
    */
   POLL_BACKEND_JOB: async (payload: {
     jobId: string;
@@ -1057,7 +1057,6 @@ class BackgroundTaskManager {
   initialize(): void {
     this.startMaintenanceTasks();
     this.startCacheCleanup();
-    this.setupNetworkListeners();
     this.processRetryQueue();
   }
 
@@ -1088,19 +1087,20 @@ class BackgroundTaskManager {
   }
 
   /**
-   * Set up network status listeners
+   * Handle network coming online
    */
-  private setupNetworkListeners(): void {
-    self.addEventListener('online', () => {
-      console.log('🌐 Network connection restored');
-      this.isOnline = true;
-      this.processRetryQueue();
-    });
+  handleNetworkOnline(): void {
+    console.log('🌐 Network connection restored');
+    this.isOnline = true;
+    this.processRetryQueue();
+  }
 
-    self.addEventListener('offline', () => {
-      console.log('📴 Network connection lost');
-      this.isOnline = false;
-    });
+  /**
+   * Handle network going offline
+   */
+  handleNetworkOffline(): void {
+    console.log('📴 Network connection lost');
+    this.isOnline = false;
   }
 
   /**
@@ -1330,6 +1330,17 @@ function initializeBackgroundTasks(): void {
 self.addEventListener('beforeunload', () => {
   console.log('🛑 Shop Sentinel service worker shutting down');
   BackgroundTaskManager.getInstance().shutdown();
+});
+
+// Network status listeners (must be added at top level to avoid warnings)
+self.addEventListener('online', () => {
+  console.log('🌐 Network connection restored');
+  BackgroundTaskManager.getInstance().handleNetworkOnline();
+});
+
+self.addEventListener('offline', () => {
+  console.log('📴 Network connection lost');
+  BackgroundTaskManager.getInstance().handleNetworkOffline();
 });
 
 console.log('🛡️ Shop Sentinel service worker loaded with enhanced background processing');
