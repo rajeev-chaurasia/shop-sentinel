@@ -7,6 +7,10 @@
  * - Message routing between content scripts and popup
  */
 
+// Import API configuration
+import { getApiUrl } from './config/env';
+import { TIMINGS, RETRY_CONFIG } from './config/constants';
+
 // Inline message utilities to avoid ES6 import issues in service worker
 interface MessageRequest {
   action: string;
@@ -39,10 +43,10 @@ function createErrorResponse(error: string): MessageResponse {
 
 // Configuration constants
 const VALIDATION_CONFIG = {
-  REQUEST_TIMEOUT: 10000, // 10 seconds
+  REQUEST_TIMEOUT: TIMINGS.REQUEST_TIMEOUT,
   MAX_CONCURRENT_REQUESTS: 5,
-  RETRY_ATTEMPTS: 2,
-  RETRY_DELAY: 1000, // 1 second
+  RETRY_ATTEMPTS: RETRY_CONFIG.MAX_RETRIES,
+  RETRY_DELAY: TIMINGS.RETRY_BACKOFF_BASE, // 500ms base
   CACHE_DURATION: 5 * 60 * 1000, // 5 minutes
 } as const;
 
@@ -596,10 +600,113 @@ const messageHandlers = {
   },
 
   /**
-   * Handle partial analysis results (forwarded to popup via runtime messaging)
+   * Handle backend job creation notification
    */
-  PARTIAL_ANALYSIS_RESULT: async (_payload: any): Promise<any> => {
-    return { success: true, acknowledged: true };
+  BACKEND_JOB_CREATED: async (payload: {
+    jobId: string;
+    url: string;
+    pageType: string;
+  }): Promise<any> => {
+    try {
+      console.log('✅ Backend job created:', payload.jobId);
+      // Relay job info to popup via cross-tab sync
+      const message = {
+        type: 'BACKEND_JOB_UPDATE',
+        jobId: payload.jobId,
+        status: 'pending',
+        progress: 0
+      };
+      chrome.runtime.sendMessage(message).catch(err =>
+        console.warn('Failed to relay job update:', err)
+      );
+      return { success: true };
+    } catch (error) {
+      console.error('❌ Error handling backend job creation:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Get backend job status
+   */
+  GET_BACKEND_JOB_STATUS: async (payload: {
+    jobId: string;
+  }): Promise<any> => {
+    try {
+      const { jobId } = payload;
+      const response = await fetch(getApiUrl(`/api/jobs/${jobId}`));
+      
+      if (!response.ok) {
+        throw new Error(`Backend error: ${response.status}`);
+      }
+      
+      const { job } = await response.json();
+      console.log(`✅ Job status retrieved for ${jobId}:`, job.status);
+      return { success: true, job };
+    } catch (error) {
+      console.error('❌ Error getting backend job status:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Poll backend for job progress updates
+   */
+  POLL_BACKEND_JOB: async (payload: {
+    jobId: string;
+    pollIntervalMs?: number;
+  }): Promise<any> => {
+    const { jobId, pollIntervalMs = 2000 } = payload;
+    
+    return new Promise((resolve, reject) => {
+      let pollCount = 0;
+      const maxPolls = 300; // 300 polls * 2s = 10 minutes max
+      
+      const pollInterval = setInterval(async () => {
+        try {
+          const response = await fetch(getApiUrl(`/api/jobs/${jobId}`));
+          
+          if (!response.ok) {
+            clearInterval(pollInterval);
+            return reject(new Error(`Backend error: ${response.status}`));
+          }
+          
+          const { job } = await response.json();
+          pollCount++;
+          
+          // Send progress update to popup
+          chrome.runtime.sendMessage({
+            action: 'BACKEND_JOB_PROGRESS',
+            payload: {
+              jobId,
+              progress: job.progress,
+              status: job.status,
+              message: job.message
+            }
+          }).catch(() => {});
+          
+          console.log(`📊 Job ${jobId} progress: ${job.progress}% (${job.status})`);
+          
+          // Stop polling if job is completed or failed
+          if (job.status === 'completed' || job.status === 'failed') {
+            clearInterval(pollInterval);
+            resolve({ success: true, job, polled: pollCount });
+          }
+          
+          // Stop polling if max attempts reached
+          if (pollCount >= maxPolls) {
+            clearInterval(pollInterval);
+            reject(new Error('Job polling timeout'));
+          }
+        } catch (error) {
+          console.error('Poll error:', error);
+          if (pollCount >= maxPolls) {
+            clearInterval(pollInterval);
+            reject(error);
+          }
+        }
+      }, pollIntervalMs);
+    });
   },
 };
 
@@ -673,8 +780,10 @@ async function handleCrossTabCoordination(payload: any, sourceTabId?: number): P
 
 /**
  * Check if URL is currently being analyzed by another tab
+ * NOTE: This function is kept for future use in cross-tab synchronization logic
+ * @internal
  */
-function isUrlBeingAnalyzed(url: string, excludeTabId?: number): boolean {
+export function isUrlBeingAnalyzed(url: string, excludeTabId?: number): boolean {
   const state = crossTabState.get(url);
   if (!state) return false;
 
@@ -961,7 +1070,7 @@ class BackgroundTaskManager {
     }, 30 * 60 * 1000);
 
     // Initial maintenance run
-    setTimeout(() => this.performMaintenance(), 5000);
+    setTimeout(() => this.performMaintenance(), TIMINGS.MAINTENANCE_INTERVAL);
   }
 
   /**
@@ -974,7 +1083,7 @@ class BackgroundTaskManager {
     }, 15 * 60 * 1000);
 
     // Initial cleanup
-    setTimeout(() => this.cleanupExpiredCache(), 10000);
+    setTimeout(() => this.cleanupExpiredCache(), TIMINGS.CACHE_CLEANUP_INTERVAL);
   }
 
   /**
@@ -1144,7 +1253,7 @@ class BackgroundTaskManager {
       action,
       payload,
       attempts: 0,
-      nextRetry: Date.now() + 5000 // Initial retry in 5 seconds
+      nextRetry: Date.now() + TIMINGS.MAINTENANCE_INTERVAL // Initial retry in 5 seconds
     });
 
     console.log(`📋 Added ${action} to retry queue (${retryId})`);
@@ -1213,15 +1322,7 @@ class BackgroundTaskManager {
 }
 
 // Initialize background tasks
-async function initializeBackgroundTasks(): Promise<void> {
-  // Import cleanup function dynamically to avoid ES6 import issues in service worker
-  try {
-    const { cleanupStorageOnStartup } = await import('./services/cleanup');
-    await cleanupStorageOnStartup();
-  } catch (error) {
-    console.warn('⚠️ Could not run storage cleanup:', error);
-  }
-  
+function initializeBackgroundTasks(): void {
   BackgroundTaskManager.getInstance().initialize();
 }
 

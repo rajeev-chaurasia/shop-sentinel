@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useAnalysisStore } from '../stores';
+import { useAnalysisStore, initializeAnalysisStore } from '../stores';
 import { MessagingService } from '../services/messaging';
 import { StorageService } from '../services/storage';
 import { cacheService } from '../services/cache';
@@ -7,6 +7,7 @@ import { crossTabSync } from '../services/crossTabSync';
 import type { AnalysisResult } from '../types';
 import { RiskMeter, ReasonsList, PolicySummary } from '../components';
 import { createErrorFromMessage } from '../types/errors';
+import { TIMINGS } from '../config/constants';
 
 function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'reasons' | 'policies'>('overview');
@@ -125,7 +126,7 @@ function App() {
         } catch (error) {
           console.error('Poll error:', error);
         }
-      }, 1500);
+      }, TIMINGS.POLL_INTERVAL);
 
       currentInterval = interval;
       setPollInterval(interval);
@@ -147,7 +148,7 @@ function App() {
     if (!isLoading) return;
     const timeout = setTimeout(() => {
       loadCachedAnalysis();
-    }, 8000);
+    }, TIMINGS.FALLBACK_CACHE_CHECK_TIMEOUT);
     
     return () => clearTimeout(timeout);
   }, [isLoading]);
@@ -400,7 +401,10 @@ function App() {
   }, [currentUrl, isLoading]);
 
   const initializePopup = async () => {
-    // Start with no loading states for instant popup feel
+    // Load persisted analysis state from storage
+    await initializeAnalysisStore();
+
+    // Don't show loading on startup for better UX
     setIsCheckingCache(false);
 
     try {
@@ -651,11 +655,9 @@ function App() {
           console.log('✅ Annotations cleared');
         }
       } else {
-        // Show annotations with mock data (TG-07 will provide real data)
+        // Show annotations from analysis results
         const response = await MessagingService.sendToActiveTab('HIGHLIGHT_ELEMENTS', {
-          // TODO [TG-07 Integration]: Replace with real AI elements
-          // Currently using mock data from annotator
-          elements: undefined, // Will use MOCK_ANNOTATIONS in content script
+          elements: undefined,
         });
         
         if (response.success) {

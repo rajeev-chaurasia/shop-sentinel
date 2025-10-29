@@ -367,5 +367,20 @@ export const StorageService = {
     console.log(`🗑️ Clearing partial result: ${partialKey}`);
     return this.remove(partialKey);
   },
+
+  /**
+   * Store job ID for a URL to track backend job status
+   */
+  async setJobId(url: string, jobId: string): Promise<boolean> {
+    try {
+      const key = `job_${this.generateCacheKey(url, '')}`;
+      await chrome.storage.local.set({ [key]: { jobId, timestamp: Date.now() } });
+      console.log(`💾 Job ID stored: ${key} = ${jobId}`);
+      return true;
+    } catch (error) {
+      console.error('Error storing job ID:', error);
+      return false;
+    }
+  },
 };
 
