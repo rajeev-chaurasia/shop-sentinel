@@ -4,6 +4,7 @@ import { runContentPolicyChecks } from '../heuristics/content';
 import { AIService } from '../services/ai';
 import { RiskCalculator } from '../services/riskCalculator';
 import { crossTabSync } from '../services/crossTabSync';
+import { PolicyDetectionService } from '../services/policyDetection';
 import { displayAnnotations, clearAnnotations } from './annotator';
 import { getApiUrl } from '../config/env';
 
@@ -15,6 +16,8 @@ async function handlePing() {
 
 async function handleGetPageInfo() {
   const pageTypeResult = detectPageType();
+  const policyDetection = PolicyDetectionService.detectPolicyPage();
+  
   return {
     title: document.title,
     url: window.location.href,
@@ -22,6 +25,10 @@ async function handleGetPageInfo() {
     protocol: window.location.protocol,
     pageType: pageTypeResult.type,
     pageTypeConfidence: pageTypeResult.confidence,
+    pageTypeSignals: pageTypeResult.signals,
+    isPolicyPage: policyDetection.isPolicyPage,
+    policyType: policyDetection.policyType,
+    policyConfidence: policyDetection.confidence,
   };
 }
 
@@ -30,8 +37,8 @@ async function handleGetPageInfo() {
  */
 interface PageTypeResult {
   type: 'home' | 'product' | 'category' | 'checkout' | 'cart' | 'policy' | 'other';
-  confidence: number; // 0-100
-  signals: string[]; // What made us decide this
+  confidence: number;
+  signals: string[];
 }
 
 /**
@@ -43,7 +50,6 @@ function detectPageType(): PageTypeResult {
   const search = window.location.search.toLowerCase();
   const title = document.title.toLowerCase();
   
-  // Score-based detection for better accuracy
   const scores = {
     checkout: 0,
     cart: 0,
@@ -54,7 +60,6 @@ function detectPageType(): PageTypeResult {
   };
   const signals: string[] = [];
   
-  // === CHECKOUT PAGE DETECTION ===
   if (path.includes('checkout') || path.includes('payment')) {
     scores.checkout += 40;
     signals.push('checkout-url');
@@ -72,7 +77,6 @@ function detectPageType(): PageTypeResult {
     signals.push('payment-input');
   }
   
-  // === CART PAGE DETECTION ===
   if (path.includes('cart') || path.includes('basket')) {
     scores.cart += 40;
     signals.push('cart-url');
@@ -772,6 +776,54 @@ async function handleUpdateIcon(payload: { riskLevel: string; badgeText: string 
   }
 }
 
+async function handleAnalyzePolicy() {
+  console.log('📄 POLICY_ANALYSIS message received in content script');
+  
+  try {
+    // Detect if current page is a policy page
+    const policyDetection = PolicyDetectionService.detectPolicyPage();
+    
+    if (!policyDetection.isPolicyPage) {
+      return {
+        status: 'error',
+        message: 'Current page is not detected as a policy page',
+        url: window.location.href,
+      };
+    }
+
+    console.log(`📄 Detected policy page: ${policyDetection.policyType} (confidence: ${policyDetection.confidence}%)`);
+
+    // Generate AI-powered policy summary
+    const policySummary = await PolicyDetectionService.generatePolicySummary(policyDetection);
+    
+    if (!policySummary) {
+      return {
+        status: 'error',
+        message: 'Failed to generate policy summary',
+        url: window.location.href,
+      };
+    }
+
+    console.log('✅ Policy summary generated successfully');
+
+    return {
+      status: 'success',
+      url: window.location.href,
+      policyDetection,
+      policySummary,
+      timestamp: Date.now(),
+    };
+
+  } catch (error) {
+    console.error('❌ Policy analysis failed:', error);
+    return {
+      status: 'error',
+      message: error instanceof Error ? error.message : 'Unknown error occurred',
+      url: window.location.href,
+    };
+  }
+}
+
 // ============================================================================
 // URL CHANGE MONITORING (for SPAs)
 // ============================================================================
@@ -963,6 +1015,7 @@ function initializeContentScript() {
     PING: handlePing,
     GET_PAGE_INFO: handleGetPageInfo,
     ANALYZE_PAGE: handleAnalyzePage,
+    ANALYZE_POLICY: handleAnalyzePolicy,
     HIGHLIGHT_ELEMENTS: handleHighlightElements,
     CLEAR_HIGHLIGHTS: handleClearHighlights,
     UPDATE_ICON: handleUpdateIcon,

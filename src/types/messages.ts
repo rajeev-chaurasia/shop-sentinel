@@ -1,6 +1,7 @@
 export type MessageAction =
   | 'PING'
   | 'ANALYZE_PAGE'
+  | 'ANALYZE_POLICY'
   | 'GET_PAGE_INFO'
   | 'GET_POLICIES'
   | 'HIGHLIGHT_ELEMENTS'
