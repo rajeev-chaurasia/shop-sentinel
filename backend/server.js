@@ -85,19 +85,19 @@ async function initializeDatabase() {
 // Create job
 app.post('/api/jobs', async (req, res) => {
   try {
-    const { url, options } = req.body;
+    const { url, pageType, options } = req.body;
     if (!url) return res.status(400).json({ error: 'URL required' });
     
     const client = await getDbConnection();
     const jobId = uuidv4();
     const query = `
-      INSERT INTO jobs (id, url, status, progress, session_id, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, $5, NOW(), NOW())
+      INSERT INTO jobs (id, url, page_type, status, progress, session_id, created_at, updated_at)
+      VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
       RETURNING *
     `;
     
-    const result = await client.query(query, [jobId, url, 'pending', 0, options?.sessionId]);
-    console.log(`✅ Job created: ${jobId}`);
+    const result = await client.query(query, [jobId, url, pageType || 'home', 'pending', 0, options?.sessionId]);
+    console.log(`✅ Job created: ${jobId} (${pageType || 'home'})`);
     res.json({ success: true, job: result.rows[0] });
   } catch (error) {
     console.error('❌ Job creation failed:', error);
@@ -185,6 +185,47 @@ app.patch('/api/jobs/:jobId', async (req, res) => {
   }
 });
 
+// Check if analysis already cached
+app.get('/api/jobs/cached', async (req, res) => {
+  try {
+    const { url, pageType } = req.query;
+    if (!url) return res.status(400).json({ error: 'URL required' });
+    
+    const client = await getDbConnection();
+    const query = `
+      SELECT j.*, jr.result_data
+      FROM jobs j
+      LEFT JOIN job_results jr ON j.id = jr.job_id
+      WHERE j.url = $1 
+        AND j.page_type = $2 
+        AND j.status = 'completed'
+        AND j.created_at > NOW() - INTERVAL '24 hours'
+      ORDER BY j.created_at DESC 
+      LIMIT 1
+    `;
+    
+    const result = await client.query(query, [url, pageType || 'home']);
+    
+    if (result.rows.length > 0) {
+      console.log(`✅ Cache hit for ${pageType || 'home'}: ${url}`);
+      res.json({ 
+        success: true, 
+        cached: true, 
+        analysis: result.rows[0],
+        cacheAge: Math.floor((Date.now() - new Date(result.rows[0].created_at).getTime()) / 1000) // seconds
+      });
+    } else {
+      res.json({ 
+        success: true, 
+        cached: false 
+      });
+    }
+  } catch (error) {
+    console.error('❌ Cache lookup failed:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 /**
  * Webhook Management Endpoints
  */
@@ -248,25 +289,8 @@ app.delete('/api/webhooks/:webhookId', async (req, res) => {
   }
 });
 
-// Get webhook deliveries (for debugging/monitoring)
-app.get('/api/webhooks/deliveries', async (req, res) => {
-  try {
-    const client = await getDbConnection();
-    const query = `
-      SELECT * FROM webhook_deliveries 
-      ORDER BY delivered_at DESC NULLS LAST
-      LIMIT 50
-    `;
-    const result = await client.query(query);
-    res.json(result.rows);
-  } catch (error) {
-    console.error('❌ Get deliveries failed:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
 /**
- * Trigger webhooks on job completion
+ * Trigger webhooks on job completion (MANDATORY for all completions)
  */
 async function triggerWebhooks(jobId, result) {
   try {
@@ -274,10 +298,14 @@ async function triggerWebhooks(jobId, result) {
     const webhooksQuery = 'SELECT * FROM webhooks WHERE is_active = true';
     const webhooksResult = await client.query(webhooksQuery);
     
+    if (webhooksResult.rows.length === 0) {
+      console.log('ℹ️ No active webhooks configured');
+      return;
+    }
+    
     for (const webhook of webhooksResult.rows) {
       if (!webhook.events.includes('analysis_complete')) continue;
       
-      const deliveryId = uuidv4();
       const payload = { event: 'analysis_complete', jobId, result, timestamp: Date.now() };
       const signature = crypto
         .createHmac('sha256', webhook.secret)
@@ -289,33 +317,22 @@ async function triggerWebhooks(jobId, result) {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
-            'X-Webhook-Signature': signature,
-            'X-Webhook-Delivery': deliveryId
+            'X-Webhook-Signature': signature
           },
           body: JSON.stringify(payload),
           timeout: 10000
         });
         
-        const deliveryQuery = `
-          INSERT INTO webhook_deliveries (id, webhook_id, job_id, event_type, payload, status, response_status, delivered_at)
-          VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-        `;
-        await client.query(deliveryQuery, [
-          deliveryId, webhook.id, jobId, 'analysis_complete',
-          JSON.stringify(payload), response.ok ? 'delivered' : 'failed', response.status
-        ]);
+        // Update last triggered timestamp
+        await client.query(
+          'UPDATE webhooks SET last_triggered_at = NOW() WHERE id = $1',
+          [webhook.id]
+        );
         
-        console.log(`✅ Webhook delivered: ${webhook.url}`);
+        console.log(`✅ Webhook fired: ${webhook.url} (${response.status})`);
       } catch (error) {
-        const failedDeliveryQuery = `
-          INSERT INTO webhook_deliveries (id, webhook_id, job_id, event_type, payload, status, error_message)
-          VALUES ($1, $2, $3, $4, $5, $6, $7)
-        `;
-        await client.query(failedDeliveryQuery, [
-          deliveryId, webhook.id, jobId, 'analysis_complete',
-          JSON.stringify(payload), 'pending', error.message
-        ]);
-        console.error(`⚠️ Webhook delivery failed: ${webhook.url}`);
+        // Log error but don't fail the job completion
+        console.error(`⚠️ Webhook delivery failed for ${webhook.url}: ${error.message}`);
       }
     }
   } catch (error) {

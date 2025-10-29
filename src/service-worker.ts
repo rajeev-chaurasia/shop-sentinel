@@ -5,10 +5,12 @@
  * - Social media URL validation
  * - Network requests with proper error handling
  * - Message routing between content scripts and popup
+ * - WebSocket connections for real-time job updates
+ * - Fallback polling if WebSocket unavailable
  */
 
 // Import API configuration
-import { getApiUrl } from './config/env';
+import { getApiUrl, getWsUrl } from './config/env';
 import { TIMINGS, RETRY_CONFIG } from './config/constants';
 
 // Inline message utilities to avoid ES6 import issues in service worker
@@ -656,56 +658,147 @@ const messageHandlers = {
     jobId: string;
     pollIntervalMs?: number;
   }): Promise<any> => {
-    const { jobId, pollIntervalMs = 2000 } = payload;
+    const { jobId, pollIntervalMs = 1500 } = payload;
     
     return new Promise((resolve, reject) => {
       let pollCount = 0;
-      const maxPolls = 300; // 300 polls * 2s = 10 minutes max
+      let pollingActive = false;
+      const maxPolls = 300; // 300 polls * 1.5s = 450 seconds max (7.5 minutes)
       
-      const pollInterval = setInterval(async () => {
-        try {
-          const response = await fetch(getApiUrl(`/api/jobs/${jobId}`));
+      // Try WebSocket first
+      let wsConnected = false;
+      let ws: WebSocket | null = null;
+      
+      try {
+        const wsUrl = getWsUrl();
+        ws = new WebSocket(wsUrl);
+        
+        ws.onopen = () => {
+          console.log(`✅ Service Worker: WebSocket connected for job ${jobId}`);
+          wsConnected = true;
           
-          if (!response.ok) {
-            clearInterval(pollInterval);
-            return reject(new Error(`Backend error: ${response.status}`));
-          }
-          
-          const { job } = await response.json();
-          pollCount++;
-          
-          // Send progress update to popup
-          chrome.runtime.sendMessage({
-            action: 'BACKEND_JOB_PROGRESS',
-            payload: {
-              jobId,
-              progress: job.progress,
-              status: job.status,
-              message: job.message
+          // Subscribe to this job
+          ws?.send(JSON.stringify({
+            action: 'subscribe',
+            jobId
+          }));
+        };
+        
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'job_update' && data.job?.id === jobId) {
+              console.log(`📡 WebSocket: Job ${jobId} update:`, data.job.status);
+              
+              // Send progress update to popup
+              chrome.runtime.sendMessage({
+                action: 'BACKEND_JOB_PROGRESS',
+                payload: {
+                  jobId,
+                  progress: data.job.progress,
+                  status: data.job.status,
+                  message: data.job.message,
+                  source: 'websocket'
+                }
+              }).catch(() => {});
+              
+              // Stop WebSocket if job is completed
+              if (data.job.status === 'completed' || data.job.status === 'failed') {
+                console.log(`✅ WebSocket: Job completed via WebSocket`);
+                if (ws) ws.close();
+                if (pollingActive) clearInterval(pollingActive as any);
+                resolve({ success: true, job: data.job, source: 'websocket' });
+              }
             }
-          }).catch(() => {});
-          
-          console.log(`📊 Job ${jobId} progress: ${job.progress}% (${job.status})`);
-          
-          // Stop polling if job is completed or failed
-          if (job.status === 'completed' || job.status === 'failed') {
-            clearInterval(pollInterval);
-            resolve({ success: true, job, polled: pollCount });
+          } catch (error) {
+            console.error('WebSocket message error:', error);
           }
-          
-          // Stop polling if max attempts reached
-          if (pollCount >= maxPolls) {
-            clearInterval(pollInterval);
-            reject(new Error('Job polling timeout'));
+        };
+        
+        ws.onerror = (error) => {
+          console.warn('⚠️ WebSocket error, falling back to polling:', error);
+          wsConnected = false;
+          startPolling();
+        };
+        
+        ws.onclose = () => {
+          console.log('⚠️ WebSocket disconnected, checking polling status');
+          wsConnected = false;
+          if (!pollingActive) startPolling();
+        };
+      } catch (error) {
+        console.warn('⚠️ WebSocket connection failed, using polling:', error);
+        startPolling();
+      }
+      
+      // Fallback polling mechanism
+      function startPolling() {
+        if (pollingActive) return; // Already polling
+        
+        console.log(`📊 Service Worker: Polling job ${jobId} every ${pollIntervalMs}ms`);
+        pollingActive = true;
+        
+        const interval = setInterval(async () => {
+          try {
+            const response = await fetch(getApiUrl(`/api/jobs/${jobId}`));
+            
+            if (!response.ok) {
+              clearInterval(interval);
+              pollingActive = false;
+              return reject(new Error(`Backend error: ${response.status}`));
+            }
+            
+            const { job } = await response.json();
+            pollCount++;
+            
+            // Send progress update to popup
+            chrome.runtime.sendMessage({
+              action: 'BACKEND_JOB_PROGRESS',
+              payload: {
+                jobId,
+                progress: job.progress,
+                status: job.status,
+                message: job.message,
+                source: wsConnected ? 'websocket' : 'polling'
+              }
+            }).catch(() => {});
+            
+            console.log(`📊 Polling: Job ${jobId} progress: ${job.progress}% (${job.status})`);
+            
+            // Stop polling if job is completed or failed
+            if (job.status === 'completed' || job.status === 'failed') {
+              clearInterval(interval);
+              pollingActive = false;
+              if (ws) ws.close();
+              resolve({ success: true, job, polled: pollCount, source: 'polling' });
+            }
+            
+            // Stop polling if max attempts reached
+            if (pollCount >= maxPolls) {
+              clearInterval(interval);
+              pollingActive = false;
+              if (ws) ws.close();
+              reject(new Error('Job polling timeout'));
+            }
+          } catch (error) {
+            console.error('Poll error:', error);
+            if (pollCount >= maxPolls) {
+              clearInterval(interval);
+              pollingActive = false;
+              if (ws) ws.close();
+              reject(error);
+            }
           }
-        } catch (error) {
-          console.error('Poll error:', error);
-          if (pollCount >= maxPolls) {
-            clearInterval(pollInterval);
-            reject(error);
-          }
+        }, pollIntervalMs);
+      }
+      
+      // Start polling if WebSocket doesn't connect within 2 seconds
+      setTimeout(() => {
+        if (!wsConnected && !pollingActive) {
+          console.log('⏳ WebSocket not connected, starting polling fallback');
+          startPolling();
         }
-      }, pollIntervalMs);
+      }, 2000);
     });
   },
 };
