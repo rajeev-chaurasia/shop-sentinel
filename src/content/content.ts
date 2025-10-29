@@ -5,7 +5,8 @@ import { AIService } from '../services/ai';
 import { RiskCalculator } from '../services/riskCalculator';
 import { crossTabSync } from '../services/crossTabSync';
 import { PolicyDetectionService } from '../services/policyDetection';
-import { displayAnnotations, clearAnnotations, MOCK_ANNOTATIONS } from './annotator';
+import { displayAnnotations, clearAnnotations } from './annotator';
+import { getApiUrl } from '../config/env';
 
 console.log('🛡️ Shop Sentinel content script loaded on:', window.location.href);
 
@@ -320,6 +321,66 @@ async function handleAnalyzePage(payload: any) {
     // Broadcast analysis start to other tabs
     crossTabSync.broadcastAnalysisStart(window.location.href, pageType);
     
+    // ============================================================================
+    // STEP 1: Create backend job BEFORE starting analysis
+    // ============================================================================
+    let backendJobId: string | null = null;
+    const sessionId = `${Date.now()}-${Math.random()}`;
+    
+    try {
+      console.log('📤 Creating backend job...');
+      const jobResponse = await fetch(getApiUrl('/api/jobs'), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          url: window.location.href,
+          pageType,
+          options: { sessionId },
+          status: 'created',
+          progress: 0,
+        })
+      });
+      
+      if (jobResponse.ok) {
+        const jobData = await jobResponse.json();
+        backendJobId = jobData.job?.id;
+        if (backendJobId) {
+          console.log(`✅ Backend job created: ${backendJobId}`);
+          
+          // Notify service worker about the job for UI sync
+          chrome.runtime.sendMessage({
+            action: 'BACKEND_JOB_CREATED',
+            payload: { jobId: backendJobId, url: window.location.href, pageType, sessionId }
+          }).catch(err => console.warn('Failed to notify service worker:', err));
+        }
+      } else {
+        console.warn('⚠️ Backend job creation failed:', jobResponse.status);
+      }
+    } catch (jobError) {
+      console.warn('⚠️ Failed to create backend job:', jobError);
+      // Continue analysis even if backend job creation fails (graceful degradation)
+    }
+    
+    // Helper function to update backend job progress
+    const updateBackendJobProgress = async (progress: number, phase: string, data?: any) => {
+      if (!backendJobId) return;
+      
+      try {
+        await fetch(getApiUrl(`/api/jobs/${backendJobId}`), {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            progress: Math.min(Math.max(progress, 0), 100),
+            phase,
+            sessionId,
+            ...data,
+          })
+        }).catch(err => console.warn(`Failed to update job progress to ${progress}%:`, err));
+      } catch (error) {
+        console.warn('Error updating backend job progress:', error);
+      }
+    };
+    
     // Helper function to send partial results progressively
     const sendPartialResult = async (partialData: any, phase: string) => {
       try {
@@ -359,6 +420,13 @@ async function handleAnalyzePage(payload: any) {
       runDomainSecurityChecks(payload?.includeWhois),
       runContentPolicyChecks()
     ]);
+    
+    // Update backend job: heuristics complete (30% progress)
+    await updateBackendJobProgress(30, 'heuristics_complete', {
+      heuristicsFinished: true,
+      hasSecurityIssues: security.signals.length > 0,
+      hasDomainIssues: domain.signals.length > 0,
+    });
 
     // Send partial result after heuristic analysis
     const heuristicSignals = [
@@ -494,6 +562,12 @@ async function handleAnalyzePage(payload: any) {
           aiAnalysisTime = performance.now() - aiStartTime;
           console.log(`✅ AI found ${aiSignals.length} signals in ${aiAnalysisTime.toFixed(0)}ms (parallel)`);
           
+          // Update backend job: AI analysis complete (65% progress)
+          await updateBackendJobProgress(65, 'ai_complete', {
+            aiFinished: true,
+            aiSignalsFound: aiSignals.length,
+          });
+          
           // Send partial result after AI analysis
           const allSignalsWithAI = [...heuristicSignals, ...aiSignals];
           const aiRiskAnalysis = RiskCalculator.calculateScore(allSignalsWithAI);
@@ -614,6 +688,36 @@ async function handleAnalyzePage(payload: any) {
       await StorageService.clearAnalysisProgress(window.location.href);
       console.log(`💾 Analysis cached: ${pageType}`);
       
+      // ============================================================================
+      // STEP 5: Finalize backend job with complete analysis results
+      // ============================================================================
+      if (backendJobId) {
+        try {
+          console.log('📤 Finalizing backend job with complete results...');
+          const finalizeResponse = await fetch(getApiUrl(`/api/jobs/${backendJobId}`), {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              status: 'completed',
+              progress: 100,
+              phase: 'completed',
+              result: analysis,
+              sessionId,
+              completedAt: new Date().toISOString(),
+            })
+          });
+          
+          if (finalizeResponse.ok) {
+            console.log(`✅ Backend job finalized: ${backendJobId}`);
+          } else {
+            console.warn('⚠️ Failed to finalize backend job:', finalizeResponse.status);
+          }
+        } catch (finalizeError) {
+          console.error('⚠️ Failed to finalize backend job:', finalizeError);
+          // Don't fail analysis if backend finalization fails (graceful degradation)
+        }
+      }
+      
       // Broadcast analysis completion to other tabs
       crossTabSync.broadcastAnalysisUpdate(window.location.href, analysis);
     } catch (cacheError) {
@@ -646,10 +750,7 @@ async function handleAnalyzePage(payload: any) {
 async function handleHighlightElements(payload: any) {
   console.log('🎨 Highlighting elements...', payload);
   
-  // TODO [TG-07 Integration]: Replace with real AI elements when TG-07 is merged
-  // Currently using mock data for testing annotations
-  const elementsToHighlight = payload?.elements || MOCK_ANNOTATIONS;
-  
+  const elementsToHighlight = payload?.elements || [];
   const result = displayAnnotations(elementsToHighlight);
   return result;
 }

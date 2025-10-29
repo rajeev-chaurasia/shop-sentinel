@@ -4,9 +4,9 @@ import {
   DomainAnalysis, 
   PaymentAnalysis 
 } from '../types/analysis';
+import { getApiUrl } from '../config/env';
+import { TIMINGS } from '../config/constants';
 
-// Configuration
-const PROXY_BACKEND_URL = 'http://localhost:3001'; // Change this to your deployed backend URL
 const DOMAIN_AGE_THRESHOLD_DAYS = 180;
 
 // Scoring values
@@ -150,13 +150,13 @@ export async function checkDomainAge(domain: string, includeWhois: boolean = fal
       console.log('🔧 WHOIS verification disabled, using mock data for:', cleanDomain);
       whoisData = MOCK_WHOIS_RESPONSES[cleanDomain] || MOCK_WHOIS_RESPONSES['example.com'];
       // Simulate API delay
-      await new Promise(resolve => setTimeout(resolve, 100));
+      await new Promise(resolve => setTimeout(resolve, TIMINGS.API_CALL_DELAY));
     } else {
       // Call proxy backend server
       console.log('🌐 Fetching WHOIS data via proxy for:', cleanDomain);
 
       const response = await fetch(
-        `${PROXY_BACKEND_URL}/api/whois/${cleanDomain}`,
+        `${getApiUrl('whois')}/${cleanDomain}`,
         {
           method: 'GET',
           headers: {

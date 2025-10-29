@@ -1,14 +1,13 @@
 {
   "name": "shop-sentinel",
   "version": "1.0.0",
-  "description": "A powerful Chrome Extension built with React, Vite, and TailwindCSS",
+  "description": "Chrome Extension for e-commerce site risk analysis",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "dev:full": "concurrently \"npm run dev:backend\" \"npm run dev:frontend\"",
     "dev:backend": "cd backend && npm run dev",
     "dev:frontend": "vite",
-    "test:backend": "node test-backend.js",
     "build": "tsc && vite build && npm run copy-files && node organize-build.js",
     "copy-files": "cp manifest.json dist/ && cp -r public/icons dist/",
     "preview": "vite preview"
@@ -17,9 +16,11 @@
     "chrome-extension",
     "react",
     "vite",
-    "tailwindcss"
+    "tailwindcss",
+    "ecommerce",
+    "security"
   ],
-  "author": "",
+  "author": "Rajeev Chaurasia",
   "license": "MIT",
   "devDependencies": {
     "@types/chrome": "^0.1.22",
@@ -38,7 +39,6 @@
     "vite-plugin-static-copy": "^3.1.3"
   },
   "dependencies": {
-    "build": "^0.1.4",
     "zustand": "^5.0.8"
   }
 }
