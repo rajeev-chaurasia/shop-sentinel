@@ -141,20 +141,22 @@ app.get('/api/jobs', async (req, res) => {
 app.patch('/api/jobs/:jobId', async (req, res) => {
   try {
     const { jobId } = req.params;
-    const { progress, status, message, result } = req.body;
+    const { progress, status, message, stage, result } = req.body;
     const client = await getDbConnection();
     
     const updateQuery = `
       UPDATE jobs
       SET progress = COALESCE($1, progress),
           status = COALESCE($2, status),
-          message = COALESCE($3, message),
+          current_stage = COALESCE($3, current_stage),
+          message = COALESCE($4, message),
+          started_at = CASE WHEN started_at IS NULL THEN NOW() ELSE started_at END,
           updated_at = NOW()
-      WHERE id = $4
+      WHERE id = $5
       RETURNING *
     `;
     
-    const updateResult = await client.query(updateQuery, [progress ?? null, status ?? null, message ?? null, jobId]);
+    const updateResult = await client.query(updateQuery, [progress ?? null, status ?? null, stage ?? null, message ?? null, jobId]);
     if (updateResult.rows.length === 0) {
       return res.status(404).json({ error: 'Job not found' });
     }

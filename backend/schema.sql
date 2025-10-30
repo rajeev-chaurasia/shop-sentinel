@@ -8,11 +8,13 @@ CREATE TABLE IF NOT EXISTS jobs (
   page_type VARCHAR(100) DEFAULT 'home',
   status VARCHAR(50) NOT NULL DEFAULT 'pending',
   progress INTEGER DEFAULT 0,
+  current_stage VARCHAR(100), -- metadata, content, links, trust_signals, ai_analysis, completed
   message TEXT,
   content_hash VARCHAR(255),
   session_id VARCHAR(255),
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  started_at TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Job results table for storing analysis results

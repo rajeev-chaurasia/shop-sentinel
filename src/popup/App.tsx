@@ -6,7 +6,7 @@ import { cacheService } from '../services/cache';
 import { crossTabSync } from '../services/crossTabSync';
 import { PolicyDetectionService } from '../services/policyDetection';
 import type { AnalysisResult } from '../types';
-import { RiskMeter, ReasonsList, PolicySummary } from '../components';
+import { RiskMeter, ReasonsList, PolicySummary, AnalysisProgress } from '../components';
 import { createErrorFromMessage } from '../types/errors';
 import { TIMINGS } from '../config/constants';
 import { getApiUrl } from '../config/env';
@@ -43,6 +43,11 @@ function App() {
     setPartialResult,
     completeAnalysis,
     setError,
+    backendJobProgress,
+    backendJobStage,
+    backendJobEstimatedTimeRemaining,
+    updateBackendJobProgress,
+    setBackendJob,
   } = useAnalysisStore();
 
   // Use full results if available, otherwise partial results
@@ -148,6 +153,36 @@ function App() {
       }
     };
   }, []);
+
+  // Restore job progress when popup opens (handles tab close/reopen)
+  useEffect(() => {
+    const restoreActiveJob = async () => {
+      try {
+        const response = await chrome.runtime.sendMessage({
+          action: 'GET_ACTIVE_JOB'
+        });
+
+        if (response?.success && response?.jobId) {
+          console.log('📊 Restoring active job on popup open:', response);
+          // Update store with the active job progress
+          updateBackendJobProgress(
+            response.progress,
+            'processing',
+            '',
+            response.stage,
+            response.estimatedTimeRemaining
+          );
+        }
+      } catch (error) {
+        console.warn('⚠️ Failed to restore active job:', error);
+      }
+    };
+
+    // Only restore if we don't already have a job ID
+    if (!backendJobProgress || backendJobProgress === 0) {
+      restoreActiveJob();
+    }
+  }, []); // Only run on mount
 
   // Poll for results when in loading state (non-blocking, no isUpdating guard)
   useEffect(() => {
@@ -450,6 +485,29 @@ function App() {
       unsubscribeAnalysisStart();
     };
   }, [currentUrl, isLoading]);
+
+  // Listen for backend job progress updates
+  useEffect(() => {
+    const handleProgressMessage = (message: any) => {
+      if (message.type === 'ANALYSIS_PROGRESS') {
+        const { progress, stage, estimatedTimeRemaining } = message;
+        console.log('📊 Progress update:', { progress, stage, estimatedTimeRemaining });
+        updateBackendJobProgress(progress, 'processing', '', stage, estimatedTimeRemaining);
+      } else if (message.type === 'BACKEND_JOB_STARTED') {
+        const { jobId } = message;
+        console.log('🚀 Backend job started:', jobId);
+        setBackendJob(jobId);
+      }
+    };
+
+    // Listen for messages from service worker
+    chrome.runtime.onMessage.addListener(handleProgressMessage);
+
+    // Cleanup: remove listener when effect re-runs or component unmounts
+    return () => {
+      chrome.runtime.onMessage.removeListener(handleProgressMessage);
+    };
+  }, [updateBackendJobProgress, setBackendJob]);
 
   const initializePopup = async () => {
     // Load persisted analysis state from storage
@@ -977,6 +1035,18 @@ function App() {
                   <span className="inline-block w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></span>
                   <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
                 </div>
+                
+                {/* Backend job progress if available */}
+                {backendJobProgress > 0 && (
+                  <div className="mt-6 px-4 w-full max-w-sm">
+                    <AnalysisProgress
+                      progress={backendJobProgress}
+                      stage={backendJobStage}
+                      estimatedTimeRemaining={backendJobEstimatedTimeRemaining || undefined}
+                      isActive={true}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           )}

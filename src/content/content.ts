@@ -362,7 +362,7 @@ async function handleAnalyzePage(payload: any) {
     }
     
     // Helper function to update backend job progress
-    const updateBackendJobProgress = async (progress: number, phase: string, data?: any) => {
+    const updateBackendJobProgress = async (progress: number, stage: string, data?: any) => {
       if (!backendJobId) return;
       
       try {
@@ -371,7 +371,7 @@ async function handleAnalyzePage(payload: any) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             progress: Math.min(Math.max(progress, 0), 100),
-            phase,
+            stage,
             sessionId,
             ...data,
           })
@@ -422,7 +422,7 @@ async function handleAnalyzePage(payload: any) {
     ]);
     
     // Update backend job: heuristics complete (30% progress)
-    await updateBackendJobProgress(30, 'heuristics_complete', {
+    await updateBackendJobProgress(30, 'heuristics', {
       heuristicsFinished: true,
       hasSecurityIssues: security.signals.length > 0,
       hasDomainIssues: domain.signals.length > 0,
@@ -563,7 +563,7 @@ async function handleAnalyzePage(payload: any) {
           console.log(`✅ AI found ${aiSignals.length} signals in ${aiAnalysisTime.toFixed(0)}ms (parallel)`);
           
           // Update backend job: AI analysis complete (65% progress)
-          await updateBackendJobProgress(65, 'ai_complete', {
+          await updateBackendJobProgress(65, 'ai_analysis', {
             aiFinished: true,
             aiSignalsFound: aiSignals.length,
           });

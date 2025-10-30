@@ -652,6 +652,33 @@ const messageHandlers = {
   },
 
   /**
+   * Get active job status for UI restoration (when popup reopens)
+   */
+  GET_ACTIVE_JOB: async (): Promise<any> => {
+    try {
+      const tracker = JobTracker.getInstance();
+      const activeJob = tracker.getActiveJob();
+      
+      if (!activeJob) {
+        return { success: true, jobId: null };
+      }
+      
+      return {
+        success: true,
+        jobId: activeJob.jobId,
+        progress: activeJob.progress,
+        stage: activeJob.stage,
+        estimatedTimeRemaining: activeJob.estimatedTimeRemaining,
+        url: activeJob.url,
+        pageType: activeJob.pageType
+      };
+    } catch (error) {
+      console.error('❌ Error getting active job:', error);
+      return { success: false, jobId: null };
+    }
+  },
+
+  /**
    * Poll backend for job progress updates
    */
   POLL_BACKEND_JOB: async (payload: {
@@ -1025,6 +1052,38 @@ chrome.runtime.onMessage.addListener((
         return true;
       } else {
         sendResponse(createErrorResponse('Invalid cross-tab coordination payload'));
+        return false;
+      }
+      
+    case 'BACKEND_JOB_CREATED':
+      // Start tracking job for progress updates
+      if (tabId && typedMessage.payload) {
+        const { jobId, url, pageType } = typedMessage.payload;
+        const tracker = JobTracker.getInstance();
+        tracker.trackJob(jobId, url, pageType, tabId)
+          .then(() => {
+            console.log(`✅ Started tracking job ${jobId} for tab ${tabId}`);
+            
+            // Also notify popup about the job creation
+            chrome.runtime.sendMessage({
+              type: 'BACKEND_JOB_STARTED',
+              jobId,
+              url,
+              pageType
+            }).catch(() => {
+              // Popup may not be open, that's okay
+            });
+            
+            sendResponse(createSuccessResponse({ success: true }));
+          })
+          .catch((error: any) => {
+            console.error(`❌ Failed to track job ${jobId}:`, error);
+            sendResponse(createErrorResponse(error.message));
+          });
+        return true;
+      } else {
+        console.warn('⚠️ BACKEND_JOB_CREATED missing tabId or payload');
+        sendResponse(createErrorResponse('No tab ID or invalid payload'));
         return false;
       }
   }
@@ -1435,5 +1494,249 @@ self.addEventListener('offline', () => {
   console.log('📴 Network connection lost');
   BackgroundTaskManager.getInstance().handleNetworkOffline();
 });
+
+/**
+ * Job Tracker: Persists active job sessions in IndexedDB
+ * Allows progress restoration if extension is closed/reopened during analysis
+ */
+interface JobSession {
+  jobId: string;
+  url: string;
+  pageType: string;
+  tabId: number;
+  stage: string;
+  progress: number;
+  startTime: number;
+  lastUpdate: number;
+  estTotalDuration: number;
+}
+
+class JobTracker {
+  private static instance: JobTracker;
+  private activeSessions = new Map<string, JobSession>();
+  private pollingInterval: ReturnType<typeof setInterval> | null = null;
+  private db: IDBDatabase | null = null;
+
+  static getInstance(): JobTracker {
+    if (!JobTracker.instance) {
+      JobTracker.instance = new JobTracker();
+      JobTracker.instance.initDB();
+    }
+    return JobTracker.instance;
+  }
+
+  private async initDB(): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open('shop-sentinel-jobs', 1);
+
+      request.onerror = () => {
+        console.error('Failed to open IndexedDB for job tracking');
+        reject(request.error);
+      };
+
+      request.onsuccess = () => {
+        this.db = request.result;
+        console.log('✅ JobTracker: IndexedDB initialized');
+        
+        // Restore active sessions on startup
+        this.restoreActiveSessions().catch(err =>
+          console.warn('Failed to restore active sessions:', err)
+        );
+        
+        resolve();
+      };
+
+      request.onupgradeneeded = (event) => {
+        const db = (event.target as IDBOpenDBRequest).result;
+        if (!db.objectStoreNames.contains('activeSessions')) {
+          const store = db.createObjectStore('activeSessions', { keyPath: 'jobId' });
+          store.createIndex('tabId', 'tabId', { unique: false });
+          store.createIndex('lastUpdate', 'lastUpdate', { unique: false });
+        }
+      };
+    });
+  }
+
+  async trackJob(
+    jobId: string,
+    url: string,
+    pageType: string,
+    tabId: number
+  ): Promise<void> {
+    if (!this.db) await this.initDB();
+
+    const session: JobSession = {
+      jobId,
+      url,
+      pageType,
+      tabId,
+      stage: 'metadata',
+      progress: 0,
+      startTime: Date.now(),
+      lastUpdate: Date.now(),
+      estTotalDuration: 60000, // estimate 60s
+    };
+
+    this.activeSessions.set(jobId, session);
+
+    // Persist to IndexedDB
+    try {
+      const transaction = this.db!.transaction(['activeSessions'], 'readwrite');
+      const store = transaction.objectStore('activeSessions');
+      await new Promise((resolve, reject) => {
+        const request = store.put(session);
+        request.onsuccess = () => resolve(undefined);
+        request.onerror = () => reject(request.error);
+      });
+      console.log(`📝 JobTracker: Tracking job ${jobId}`);
+    } catch (error) {
+      console.warn('Failed to persist job session:', error);
+    }
+
+    // Start polling for this job
+    this.startPolling();
+  }
+
+  private startPolling(): void {
+    if (this.pollingInterval) return;
+
+    this.pollingInterval = setInterval(async () => {
+      for (const [jobId, session] of this.activeSessions.entries()) {
+        try {
+          const response = await fetch(getApiUrl(`/api/jobs/${jobId}`));
+          if (!response.ok) continue;
+
+          const { job } = await response.json();
+
+          // Update session
+          session.progress = job.progress;
+          session.stage = job.current_stage || 'unknown';
+          session.lastUpdate = Date.now();
+
+          // Persist update
+          const transaction = this.db!.transaction(['activeSessions'], 'readwrite');
+          const store = transaction.objectStore('activeSessions');
+          await new Promise((resolve) => {
+            const request = store.put(session);
+            request.onsuccess = () => resolve(undefined);
+            request.onerror = () => resolve(undefined);
+          });
+
+          // Notify popup about progress via runtime messaging
+          chrome.runtime.sendMessage({
+            type: 'ANALYSIS_PROGRESS',
+            jobId,
+            progress: job.progress,
+            stage: job.current_stage,
+            source: 'job-tracker',
+            estimatedTimeRemaining: this.estimateTimeRemaining(session),
+          }).catch(() => {
+            // Popup may not be open, that's okay
+          });
+
+          // If complete, cleanup
+          if (job.progress === 100 || job.status === 'completed') {
+            this.activeSessions.delete(jobId);
+            const tx = this.db!.transaction(['activeSessions'], 'readwrite');
+            const st = tx.objectStore('activeSessions');
+            await new Promise((resolve) => {
+              const req = st.delete(jobId);
+              req.onsuccess = () => resolve(undefined);
+              req.onerror = () => resolve(undefined);
+            });
+          }
+        } catch (error) {
+          console.warn(`Failed to poll job ${jobId}:`, error);
+        }
+      }
+
+      // Stop if no active sessions
+      if (this.activeSessions.size === 0 && this.pollingInterval) {
+        clearInterval(this.pollingInterval);
+        this.pollingInterval = null;
+      }
+    }, 2000); // Poll every 2 seconds
+  }
+
+  private estimateTimeRemaining(session: JobSession): number {
+    const elapsed = Date.now() - session.startTime;
+    const progressPercent = session.progress / 100;
+
+    if (progressPercent === 0) return session.estTotalDuration;
+
+    const estimatedTotal = elapsed / progressPercent;
+    return Math.max(0, estimatedTotal - elapsed);
+  }
+
+  private async restoreActiveSessions(): Promise<void> {
+    if (!this.db) return;
+
+    try {
+      const transaction = this.db.transaction(['activeSessions'], 'readonly');
+      const store = transaction.objectStore('activeSessions');
+
+      const sessions = await new Promise<JobSession[]>((resolve, reject) => {
+        const request = store.getAll();
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+
+      sessions.forEach(session => {
+        this.activeSessions.set(session.jobId, session);
+      });
+
+      if (sessions.length > 0) {
+        console.log(`🔄 JobTracker: Restored ${sessions.length} active sessions`);
+        this.startPolling();
+      }
+    } catch (error) {
+      console.warn('Failed to restore active sessions:', error);
+    }
+  }
+
+  async stopTracking(jobId: string): Promise<void> {
+    this.activeSessions.delete(jobId);
+
+    if (!this.db) return;
+
+    try {
+      const transaction = this.db.transaction(['activeSessions'], 'readwrite');
+      const store = transaction.objectStore('activeSessions');
+      await new Promise((resolve) => {
+        const request = store.delete(jobId);
+        request.onsuccess = () => resolve(undefined);
+        request.onerror = () => resolve(undefined);
+      });
+    } catch (error) {
+      console.warn('Failed to stop tracking job:', error);
+    }
+  }
+
+  /**
+   * Get the first active job session (for popup restoration)
+   */
+  getActiveJob(): any {
+    const activeSessions = Array.from(this.activeSessions.values());
+    if (activeSessions.length === 0) {
+      return null;
+    }
+
+    const session = activeSessions[0];
+    return {
+      jobId: session.jobId,
+      progress: session.progress,
+      stage: session.stage,
+      estimatedTimeRemaining: this.estimateTimeRemaining(session),
+      url: session.url,
+      pageType: session.pageType
+    };
+  }
+}
+
+// Initialize JobTracker
+const jobTrackerInstance = JobTracker.getInstance();
+
+// Ensure jobTrackerInstance is used and accessible
+(globalThis as any).jobTracker = jobTrackerInstance;
 
 console.log('🛡️ Shop Sentinel service worker loaded with enhanced background processing');
