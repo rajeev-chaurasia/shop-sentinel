@@ -4,7 +4,6 @@ const express = require('express');
 const cors = require('cors');
 const helmet = require('helmet');
 const { WebSocketServer } = require('ws');
-const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
@@ -37,6 +36,7 @@ async function getDbConnection() {
     await client.connect();
     dbClient = client;
     console.log('✅ Database connected');
+    
     return client;
   } catch (error) {
     console.error('❌ Database connection failed:', error.message);
@@ -171,11 +171,6 @@ app.patch('/api/jobs/:jobId', async (req, res) => {
       await client.query(resultQuery, [jobId, JSON.stringify(result)]);
     }
     
-    // Trigger webhooks if completed
-    if (status === 'completed') {
-      triggerWebhooks(jobId, result).catch(err => console.error('Webhook error:', err));
-    }
-    
     // Broadcast to WebSocket clients
     broadcastJobUpdate(updateResult.rows[0]);
     
@@ -227,120 +222,6 @@ app.get('/api/jobs/cached', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
-
-/**
- * Webhook Management Endpoints
- */
-
-// Register webhook
-app.post('/api/webhooks', async (req, res) => {
-  try {
-    const { url, events, secret } = req.body;
-    if (!url || !events) {
-      return res.status(400).json({ error: 'URL and events required' });
-    }
-    
-    const client = await getDbConnection();
-    const webhookId = uuidv4();
-    const webhookSecret = secret || crypto.randomBytes(32).toString('hex');
-    
-    const query = `
-      INSERT INTO webhooks (id, url, secret, events, is_active, created_at, updated_at)
-      VALUES ($1, $2, $3, $4, true, NOW(), NOW())
-      RETURNING *
-    `;
-    
-    const result = await client.query(query, [webhookId, url, webhookSecret, events]);
-    console.log(`✅ Webhook registered: ${webhookId}`);
-    res.json({ success: true, webhook: result.rows[0] });
-  } catch (error) {
-    console.error('❌ Webhook registration failed:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// List webhooks
-app.get('/api/webhooks', async (req, res) => {
-  try {
-    const client = await getDbConnection();
-    const query = 'SELECT * FROM webhooks WHERE is_active = true ORDER BY created_at DESC';
-    const result = await client.query(query);
-    res.json(result.rows);
-  } catch (error) {
-    console.error('❌ List webhooks failed:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-// Delete webhook
-app.delete('/api/webhooks/:webhookId', async (req, res) => {
-  try {
-    const { webhookId } = req.params;
-    const client = await getDbConnection();
-    const query = 'UPDATE webhooks SET is_active = false WHERE id = $1 RETURNING *';
-    const result = await client.query(query, [webhookId]);
-    
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Webhook not found' });
-    }
-    console.log(`✅ Webhook deleted: ${webhookId}`);
-    res.json({ success: true, webhook: result.rows[0] });
-  } catch (error) {
-    console.error('❌ Delete webhook failed:', error);
-    res.status(500).json({ error: error.message });
-  }
-});
-
-/**
- * Trigger webhooks on job completion (MANDATORY for all completions)
- */
-async function triggerWebhooks(jobId, result) {
-  try {
-    const client = await getDbConnection();
-    const webhooksQuery = 'SELECT * FROM webhooks WHERE is_active = true';
-    const webhooksResult = await client.query(webhooksQuery);
-    
-    if (webhooksResult.rows.length === 0) {
-      console.log('ℹ️ No active webhooks configured');
-      return;
-    }
-    
-    for (const webhook of webhooksResult.rows) {
-      if (!webhook.events.includes('analysis_complete')) continue;
-      
-      const payload = { event: 'analysis_complete', jobId, result, timestamp: Date.now() };
-      const signature = crypto
-        .createHmac('sha256', webhook.secret)
-        .update(JSON.stringify(payload))
-        .digest('hex');
-      
-      try {
-        const response = await fetch(webhook.url, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'X-Webhook-Signature': signature
-          },
-          body: JSON.stringify(payload),
-          timeout: 10000
-        });
-        
-        // Update last triggered timestamp
-        await client.query(
-          'UPDATE webhooks SET last_triggered_at = NOW() WHERE id = $1',
-          [webhook.id]
-        );
-        
-        console.log(`✅ Webhook fired: ${webhook.url} (${response.status})`);
-      } catch (error) {
-        // Log error but don't fail the job completion
-        console.error(`⚠️ Webhook delivery failed for ${webhook.url}: ${error.message}`);
-      }
-    }
-  } catch (error) {
-    console.error('❌ Webhook trigger failed:', error);
-  }
-}
 
 /**
  * WebSocket for Real-Time Job Updates
@@ -441,9 +322,8 @@ const startServer = async () => {
     server.listen(PORT, () => {
       console.log(`🚀 Shop Sentinel Backend running on port ${PORT}`);
       console.log(`📊 Health: http://localhost:${PORT}/health`);
-      console.log(`� Jobs: http://localhost:${PORT}/api/jobs`);
+      console.log(`📋 Jobs: http://localhost:${PORT}/api/jobs`);
       console.log(`🔗 WebSocket: ws://localhost:${PORT}/ws`);
-      console.log(`🪝 Webhooks: http://localhost:${PORT}/api/webhooks`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);

@@ -5,7 +5,6 @@ import { AIService } from '../services/ai';
 import { RiskCalculator } from '../services/riskCalculator';
 import { crossTabSync } from '../services/crossTabSync';
 import { PolicyDetectionService } from '../services/policyDetection';
-import { displayAnnotations, clearAnnotations } from './annotator';
 import { getApiUrl } from '../config/env';
 
 console.log('🛡️ Shop Sentinel content script loaded on:', window.location.href);
@@ -747,20 +746,6 @@ async function handleAnalyzePage(payload: any) {
   }
 }
 
-async function handleHighlightElements(payload: any) {
-  console.log('🎨 Highlighting elements...', payload);
-  
-  const elementsToHighlight = payload?.elements || [];
-  const result = displayAnnotations(elementsToHighlight);
-  return result;
-}
-
-async function handleClearHighlights() {
-  console.log('🧹 Clearing highlights...');
-  const result = clearAnnotations();
-  return result;
-}
-
 async function handleUpdateIcon(payload: { riskLevel: string; badgeText: string }) {
   console.log('🎯 Content script received UPDATE_ICON:', payload);
   
@@ -1016,8 +1001,6 @@ function initializeContentScript() {
     GET_PAGE_INFO: handleGetPageInfo,
     ANALYZE_PAGE: handleAnalyzePage,
     ANALYZE_POLICY: handleAnalyzePolicy,
-    HIGHLIGHT_ELEMENTS: handleHighlightElements,
-    CLEAR_HIGHLIGHTS: handleClearHighlights,
     UPDATE_ICON: handleUpdateIcon,
   });
   

@@ -4,8 +4,6 @@ export type MessageAction =
   | 'ANALYZE_POLICY'
   | 'GET_PAGE_INFO'
   | 'GET_POLICIES'
-  | 'HIGHLIGHT_ELEMENTS'
-  | 'CLEAR_HIGHLIGHTS'
   | 'UPDATE_ICON'
   | 'CLEAR_ICON'
   | 'GET_TAB_STATE'

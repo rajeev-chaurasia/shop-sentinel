@@ -17,7 +17,6 @@ function App() {
   const [useWhoisVerification, setUseWhoisVerification] = useState(false);
   const [isFromCache, setIsFromCache] = useState(false);
   const [pollInterval, setPollInterval] = useState<number | null>(null);
-  const [annotationsVisible, setAnnotationsVisible] = useState(false);
   const [isUpdating, setIsUpdating] = useState(false);
   const [showSettings, setShowSettings] = useState(false);
   
@@ -796,32 +795,6 @@ function App() {
     setIsUpdating(false);
   };
 
-  const handleToggleAnnotations = async () => {
-    try {
-      if (annotationsVisible) {
-        // Clear annotations
-        const response = await MessagingService.sendToActiveTab('CLEAR_HIGHLIGHTS');
-        if (response.success) {
-          setAnnotationsVisible(false);
-          console.log('✅ Annotations cleared');
-        }
-      } else {
-        // Show annotations from analysis results
-        const response = await MessagingService.sendToActiveTab('HIGHLIGHT_ELEMENTS', {
-          elements: undefined,
-        });
-        
-        if (response.success) {
-          setAnnotationsVisible(true);
-          console.log(`✅ Annotations displayed: ${response.data?.highlighted || 0} elements`);
-        }
-      }
-    } catch (error) {
-      console.error('❌ Error toggling annotations:', error);
-      setError(createErrorFromMessage(error));
-    }
-  };
-
   return (
     <div className="w-[420px] min-h-[600px] bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-700 dark:from-slate-800 dark:via-slate-700 dark:to-slate-800">
         <div className="h-full flex flex-col bg-white dark:bg-slate-800 rounded-b-xl">
@@ -1161,35 +1134,6 @@ function App() {
                       />
                     </div>
                   
-                    {(currentResult!.allSignals?.length ?? 0) > 0 && (
-                      <div className="bg-gradient-to-br from-orange-50 to-yellow-50 dark:from-slate-700 dark:to-slate-600 rounded-xl p-4 border-2 border-orange-300 dark:border-slate-500">
-                        <div className="flex items-center justify-between mb-2">
-                          <div className="flex items-center gap-2">
-                            <span className="text-xl">🎨</span>
-                            <div>
-                              <div className="text-sm font-bold text-gray-900 dark:text-gray-100">Page Annotations</div>
-                              <div className="text-xs text-gray-600 dark:text-gray-400">Highlight issues on page</div>
-                            </div>
-                          </div>
-                        </div>
-                        <button
-                          onClick={handleToggleAnnotations}
-                          className={`w-full py-2.5 px-4 rounded-lg font-semibold text-sm transition-all duration-200 shadow-sm ${
-                            annotationsVisible
-                              ? 'bg-gradient-to-r from-red-500 to-orange-500 hover:from-red-600 hover:to-orange-600 text-white'
-                              : 'bg-gradient-to-r from-orange-500 to-yellow-500 hover:from-orange-600 hover:to-yellow-600 text-white'
-                          }`}
-                        >
-                          {annotationsVisible ? '👁️ Hide Highlights' : '🔍 Show Highlights'}
-                        </button>
-                        <p className="text-xs text-gray-600 dark:text-gray-400 mt-2 text-center">
-                          {annotationsVisible 
-                            ? 'Highlights are visible on the page' 
-                            : 'Click to see issues highlighted on the page'}
-                        </p>
-                      </div>
-                    )}
-                    
                     <button onClick={() => handleAnalyze(true)} disabled={isLoading} className="w-full mt-2 py-3 px-4 bg-gradient-to-r from-gray-100 to-gray-200 dark:from-slate-600 dark:to-slate-500 hover:from-gray-200 hover:to-gray-300 dark:hover:from-slate-500 dark:hover:to-slate-400 disabled:from-gray-50 disabled:to-gray-100 dark:disabled:from-slate-700 dark:disabled:to-slate-600 border-2 border-gray-300 dark:border-slate-400 text-gray-700 dark:text-slate-200 font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed">
                       {isLoading ? '🔄 Re-analyzing...' : '🔄 Re-analyze Page'}
                     </button>
