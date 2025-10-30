@@ -274,9 +274,16 @@ export const StorageService = {
     const existingLock = await this.get<AnalysisLock>(lockKey);
     
     // Check if lock exists and is still valid
-    if (existingLock && Date.now() - existingLock.acquiredAt < LOCK_TIMEOUT_MS) {
-      console.log(`🔒 Analysis lock held by another tab for ${url} (${pageType})`);
-      return false;
+    if (existingLock) {
+      const lockAge = Date.now() - existingLock.acquiredAt;
+      
+      if (lockAge < LOCK_TIMEOUT_MS) {
+        console.log(`🔒 Analysis lock held by another tab for ${url} (${pageType}), age: ${lockAge}ms`);
+        return false;
+      } else {
+        console.log(`🕐 Stale lock detected (${lockAge}ms), clearing and re-acquiring for ${url} (${pageType})`);
+        await this.remove(lockKey);
+      }
     }
     
     // Acquire lock with unique tab ID
@@ -299,6 +306,30 @@ export const StorageService = {
     const lockKey = `lock_${this.generateCacheKey(url, pageType)}`;
     console.log(`🔓 Releasing analysis lock for ${url} (${pageType})`);
     return this.remove(lockKey);
+  },
+
+  /**
+   * Clear lock for a specific URL (used when settings change during analysis)
+   * This helps prevent stuck "re-analyzing" state when toggling settings
+   */
+  async clearLockForUrl(url: string): Promise<boolean> {
+    try {
+      const all = await chrome.storage.local.get(null);
+      const parsed = new URL(url);
+      const domain = parsed.hostname.replace(/^www\./, '');
+      const prefix = `lock_analysis_${domain}:`;
+      const lockKeys = Object.keys(all).filter(key => key.startsWith(prefix));
+      
+      if (lockKeys.length > 0) {
+        await chrome.storage.local.remove(lockKeys);
+        console.log(`🧹 Cleared ${lockKeys.length} locks for ${url}`);
+      }
+      
+      return true;
+    } catch (error) {
+      console.error('Error clearing locks for URL:', error);
+      return false;
+    }
   },
 
   /**

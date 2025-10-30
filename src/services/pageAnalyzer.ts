@@ -89,7 +89,7 @@ export class PageAnalyzer {
       const heuristicResults = await this.runHeuristicAnalysis(options.includeWhois);
       
       // Phase 4: AI Analysis (if enabled and applicable)
-      const aiResults = await this.runAIAnalysis(pageTypeResult, heuristicResults, options.includeAI);
+      const aiResults = await this.runAIAnalysis(pageTypeResult, heuristicResults, options.includeAI, options.includeWhois);
       
       // Phase 5: Fingerprint Analysis
       const fingerprintResults = await this.runFingerprintAnalysis(url);
@@ -398,7 +398,8 @@ export class PageAnalyzer {
   private async runAIAnalysis(
     pageType: PageTypeResult, 
     heuristics: any, 
-    includeAI?: boolean
+    includeAI?: boolean,
+    includeWhois?: boolean
   ) {
     const aiResults = {
       signals: [] as any[],
@@ -449,7 +450,7 @@ export class PageAnalyzer {
       
       // Context-aware legitimacy analysis
       if (['product', 'checkout', 'home'].includes(pageType.type)) {
-        const legitimacyContext = this.prepareLegitimacyContext(heuristics);
+        const legitimacyContext = this.prepareLegitimacyContext(heuristics, includeWhois);
         analyses.push(AIService.analyzeLegitimacy(legitimacyContext));
       }
       
@@ -669,7 +670,7 @@ export class PageAnalyzer {
   /**
    * Prepare legitimacy analysis context with comprehensive data
    */
-  private prepareLegitimacyContext(heuristics: any) {
+  private prepareLegitimacyContext(heuristics: any, includeWhois?: boolean) {
     const pageText = document.body.innerText || '';
     
     // Extract social media data
@@ -694,6 +695,7 @@ export class PageAnalyzer {
       domainAgeYears: heuristics.domain.ageInDays ? Math.floor(heuristics.domain.ageInDays / 365) : null,
       domainStatus: heuristics.domain.status,
       domainRegistrar: heuristics.domain.registrar,
+      domainCheckEnabled: includeWhois === true,
     };
   }
 

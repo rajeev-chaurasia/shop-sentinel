@@ -11,8 +11,21 @@ const { v4: uuidv4 } = require('uuid');
 const http = require('http');
 require('dotenv').config();
 
+// Import simplified parallelization services
+const ConcurrencyControl = require('./services/concurrencyControl');
+const TaskScheduler = require('./services/analysisTasks');
+const JobQueue = require('./services/jobQueue');
+const MonitoringService = require('./services/monitoringService');
+
 const app = express();
 const PORT = parseInt(process.env.PORT || '3002', 10);
+
+// Global service instances
+let concurrencyControl = null;
+let taskScheduler = null;
+let jobQueue = null;
+let monitoringService = null;
+let dbClient = null;
 
 // Middleware
 app.use(helmet());
@@ -22,9 +35,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
-
-// Database connection
-let dbClient = null;
 
 async function getDbConnection() {
   if (dbClient) return dbClient;
@@ -79,6 +89,59 @@ async function initializeDatabase() {
 }
 
 /**
+ * Initialize simplified parallelization services
+ */
+async function initializeParallelizationServices() {
+  try {
+    console.log('⚙️ Initializing parallelization services...');
+
+    // Lightweight in-memory concurrency control
+    concurrencyControl = new ConcurrencyControl({
+      staleTimeout: 60000 // 60 seconds before stale cleanup
+    });
+    console.log('✅ Concurrency Control initialized');
+
+    // Task scheduler (in-memory, no database)
+    taskScheduler = new TaskScheduler();
+    console.log('✅ Task Scheduler initialized');
+
+    // Simple monitoring service
+    monitoringService = new MonitoringService({
+      historySize: 500
+    });
+    console.log('✅ Monitoring Service initialized');
+
+    // Job queue with simple execution model
+    jobQueue = new JobQueue(taskScheduler, concurrencyControl, {
+      maxWorkers: parseInt(process.env.MAX_WORKERS || '4'),
+      taskTimeout: 30000
+    });
+    console.log('✅ Job Queue initialized');
+
+    // Listen to queue events for monitoring
+    jobQueue.on('batch_completed', (data) => {
+      console.log(`📦 Batch ${data.batchIndex + 1}/${data.totalBatches} completed`);
+    });
+
+    jobQueue.on('job_completed', (data) => {
+      monitoringService.recordJobCompletion(data.jobId, data.duration);
+      console.log(`✅ Job completed: ${data.jobId} (${data.duration}ms)`);
+      broadcastJobUpdate({ id: data.jobId, status: 'completed', duration: data.duration });
+    });
+
+    jobQueue.on('job_failed', (data) => {
+      console.error(`❌ Job failed: ${data.jobId} - ${data.error}`);
+      broadcastJobUpdate({ id: data.jobId, status: 'failed', error: data.error });
+    });
+
+    console.log('✅ All parallelization services initialized successfully');
+  } catch (error) {
+    console.error('❌ Failed to initialize parallelization services:', error.message);
+    throw error;
+  }
+}
+
+/**
  * Job Management Endpoints
  */
 
@@ -98,6 +161,39 @@ app.post('/api/jobs', async (req, res) => {
     
     const result = await client.query(query, [jobId, url, pageType || 'home', 'pending', 0, options?.sessionId]);
     console.log(`✅ Job created: ${jobId} (${pageType || 'home'})`);
+
+    // Check for duplicates using concurrency control
+    const isAnalyzing = concurrencyControl.checkIfAnalyzing(url);
+    if (isAnalyzing) {
+      console.log(`⚠️ Analysis already in progress for ${url}`);
+      return res.json({ 
+        success: true, 
+        job: result.rows[0],
+        status: 'already_running',
+        message: 'Analysis already in progress for this URL'
+      });
+    }
+
+    // Start job execution in background (don't wait)
+    const includeAI = options?.includeAI !== false;
+    setImmediate(async () => {
+      try {
+        await jobQueue.executeJob(jobId, url, { pageType, ...options }, includeAI);
+        
+        // Update job status to completed
+        await client.query(
+          'UPDATE jobs SET status = $1, progress = $2, updated_at = NOW() WHERE id = $3',
+          ['completed', 100, jobId]
+        );
+      } catch (error) {
+        console.error(`Job execution failed: ${error.message}`);
+        await client.query(
+          'UPDATE jobs SET status = $1, message = $2, updated_at = NOW() WHERE id = $3',
+          ['failed', error.message, jobId]
+        );
+      }
+    });
+
     res.json({ success: true, job: result.rows[0] });
   } catch (error) {
     console.error('❌ Job creation failed:', error);
@@ -304,9 +400,83 @@ app.get('/api/whois/:domain', async (req, res) => {
   }
 });
 
+/**
+ * Parallelization Monitoring Endpoints
+ */
+
+// Get queue statistics
+app.get('/api/queue/stats', async (req, res) => {
+  try {
+    if (!jobQueue) {
+      return res.status(503).json({ error: 'Queue service not initialized' });
+    }
+
+    const stats = jobQueue.getQueueStats();
+    res.json({ success: true, stats });
+  } catch (error) {
+    console.error('❌ Queue stats error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get performance stats
+app.get('/api/monitoring/performance', async (req, res) => {
+  try {
+    if (!monitoringService) {
+      return res.status(503).json({ error: 'Monitoring service not initialized' });
+    }
+
+    const stats = monitoringService.getStats();
+    res.json({ success: true, stats });
+  } catch (error) {
+    console.error('❌ Performance stats error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get monitoring summary
+app.get('/api/monitoring/summary', async (req, res) => {
+  try {
+    if (!monitoringService) {
+      return res.status(503).json({ error: 'Monitoring service not initialized' });
+    }
+
+    const summary = monitoringService.getSummary();
+    res.json({ success: true, summary });
+  } catch (error) {
+    console.error('❌ Summary error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get task metrics
+app.get('/api/monitoring/tasks', async (req, res) => {
+  try {
+    if (!monitoringService) {
+      return res.status(503).json({ error: 'Monitoring service not initialized' });
+    }
+
+    const metrics = monitoringService.exportMetrics();
+    res.json({ success: true, metrics });
+  } catch (error) {
+    console.error('❌ Task metrics error:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 // Health check
 app.get('/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString(), database: dbClient ? 'connected' : 'disconnected' });
+  res.json({ 
+    status: 'ok', 
+    timestamp: new Date().toISOString(), 
+    database: dbClient ? 'connected' : 'disconnected',
+    services: {
+      concurrencyControl: !!concurrencyControl,
+      taskScheduler: !!taskScheduler,
+      jobQueue: !!jobQueue,
+      monitoringService: !!monitoringService
+    }
+  });
 });
 
 // Error handling
@@ -319,11 +489,15 @@ app.use((error, req, res, next) => {
 const startServer = async () => {
   try {
     await initializeDatabase();
+    await initializeParallelizationServices();
+
     server.listen(PORT, () => {
       console.log(`🚀 Shop Sentinel Backend running on port ${PORT}`);
       console.log(`📊 Health: http://localhost:${PORT}/health`);
       console.log(`📋 Jobs: http://localhost:${PORT}/api/jobs`);
       console.log(`🔗 WebSocket: ws://localhost:${PORT}/ws`);
+      console.log(`📈 Monitoring: http://localhost:${PORT}/api/monitoring/performance`);
+      console.log(`📊 Queue Stats: http://localhost:${PORT}/api/queue/stats`);
     });
   } catch (error) {
     console.error('❌ Failed to start server:', error);
@@ -335,7 +509,16 @@ startServer();
 
 process.on('SIGINT', async () => {
   console.log('🛑 Shutting down...');
-  if (dbClient) await dbClient.end();
+  
+  // Graceful shutdown of services
+  if (jobQueue) {
+    await jobQueue.shutdown();
+  }
+  
+  if (dbClient) {
+    await dbClient.end();
+  }
+  
   server.close();
   process.exit(0);
 });

@@ -559,9 +559,17 @@ JSON only, no markdown.`;
                     let extracted = jsonMatch[0];
 
                     // Fix common JSON issues
-                    // Remove trailing commas before closing brackets
+                    // 1. Fix unescaped quotes inside string values
+                    // Match pattern: "key": "value with " unescaped quotes"
+                    extracted = extracted.replace(/"([^"]*)":\s*"([^"]*)"/g, (_match, key, value) => {
+                        // Escape any unescaped quotes within the value
+                        const escapedValue = value.replace(/"/g, '\\"');
+                        return `"${key}": "${escapedValue}"`;
+                    });
+                    
+                    // 2. Remove trailing commas before closing brackets
                     extracted = extracted.replace(/,(\s*[}\]])/g, '$1');
-                    // Fix unquoted keys (basic attempt)
+                    // 3. Fix unquoted keys (basic attempt)
                     extracted = extracted.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
                     
                     // Handle truncated JSON - try to close incomplete objects/arrays
