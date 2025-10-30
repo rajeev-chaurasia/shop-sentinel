@@ -126,7 +126,6 @@ export interface AnalysisResult {
   isEcommerceSite: boolean;
   aiEnabled?: boolean;
   aiSignalsCount?: number;
-  elements?: AnnotationElement[];
   status?: 'success' | 'error' | 'in_progress';
   error?: string;
 }
@@ -162,14 +161,4 @@ export function getRiskColor(level: RiskSeverity): string {
     critical: '#ef4444',
   };
   return colors[level];
-}
-
-export interface AnnotationElement {
-  pattern: 'false_urgency' | 'forced_continuity' | 'hidden_costs' | 'trick_questions' | 'confirmshaming' | 'bait_switch' | 'social_proof_manipulation' | 'other';
-  reason: string;
-  severity: 'low' | 'medium' | 'high' | 'critical';
-  textSnippet?: string;
-  elementType?: 'button' | 'timer' | 'form' | 'text' | 'image' | 'other';
-  context?: string;
-  selector: string;
 }

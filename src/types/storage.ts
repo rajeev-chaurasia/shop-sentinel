@@ -34,7 +34,6 @@ export interface PolicyCache {
 export interface UserSettings {
   enableAIAnalysis: boolean;
   enableAutoScan: boolean;
-  enableAnnotations: boolean;
   riskThreshold: number;
   cacheExpiryHours: number;
   sendAnonymousTelemetry: boolean;
@@ -45,7 +44,6 @@ export interface UserSettings {
 export const DEFAULT_SETTINGS: UserSettings = {
   enableAIAnalysis: true,
   enableAutoScan: true,
-  enableAnnotations: true,
   riskThreshold: 50,
   cacheExpiryHours: 24,
   sendAnonymousTelemetry: false,
