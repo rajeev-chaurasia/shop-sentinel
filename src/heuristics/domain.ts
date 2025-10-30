@@ -5,7 +5,6 @@ import {
   PaymentAnalysis 
 } from '../types/analysis';
 import { getApiUrl } from '../config/env';
-import { TIMINGS } from '../config/constants';
 
 const DOMAIN_AGE_THRESHOLD_DAYS = 180;
 
@@ -18,45 +17,12 @@ const SCORES = {
   IRREVERSIBLE_PAYMENTS_ONLY: 45,
 } as const;
 
-// Mock WHOIS data for development (matching real API structure)
-const MOCK_WHOIS_RESPONSES: Record<string, any> = {
-  'amazon.com': {
-    createdDate: '1994-11-01T05:00:00Z',
-    registrar: 'MarkMonitor Inc.',
-    ageInDays: 10950,
-    dnssec: 'unsigned',
-    expirationDate: '2025-10-30T04:00:00Z',
-    nameServers: ['NS1.AMAZON.COM', 'NS2.AMAZON.COM'],
-    emails: 'hostmaster@amazon.com',
-  },
-  'walmart.com': {
-    createdDate: '1995-07-14T04:00:00Z',
-    registrar: 'MarkMonitor Inc.',
-    ageInDays: 10976, // ~30 years
-    dnssec: 'unsigned',
-    expirationDate: '2026-07-13T04:00:00Z',
-    nameServers: ['NS1.WALMART.COM', 'NS2.WALMART.COM'],
-    emails: 'domain-contact@walmart.com',
-  },
-  'example.com': {
-    createdDate: '1992-01-01T00:00:00Z',
-    registrar: 'IANA',
-    ageInDays: 12000,
-    dnssec: 'unsigned',
-    expirationDate: '2026-08-13T04:00:00Z',
-    nameServers: ['A.IANA-SERVERS.NET', 'B.IANA-SERVERS.NET'],
-    emails: 'reserved@iana.org',
-  },
-  'super-cheap-deals-2024.com': {
-    createdDate: new Date(Date.now() - 45 * 24 * 60 * 60 * 1000).toISOString(),
-    registrar: 'Namecheap',
-    ageInDays: 45,
-    dnssec: 'unsigned',
-    expirationDate: new Date(Date.now() + 320 * 24 * 60 * 60 * 1000).toISOString(),
-    nameServers: ['dns1.registrar-servers.com', 'dns2.registrar-servers.com'],
-    emails: 'abuse@namecheap.com',
-  },
-};
+// Mock WHOIS data - REMOVED
+// Mock data can cause incorrect AI analysis, so we skip WHOIS checks when disabled
+
+/**
+ * Check domain age using WHOIS API
+ */
 
 /**
  * Check if the site is using HTTPS
@@ -143,115 +109,126 @@ export async function checkDomainAge(domain: string, includeWhois: boolean = fal
     // Strip www. prefix for WHOIS lookup
     const cleanDomain = domain.replace(/^www\./i, '');
     
-    let whoisData;
-
+    // Skip domain age check if WHOIS verification is disabled
+    // Mock data would skew AI analysis results, so we return empty signals
     if (!includeWhois) {
-      // Use mock data when WHOIS verification is disabled
-      console.log('🔧 WHOIS verification disabled, using mock data for:', cleanDomain);
-      whoisData = MOCK_WHOIS_RESPONSES[cleanDomain] || MOCK_WHOIS_RESPONSES['example.com'];
-      // Simulate API delay
-      await new Promise(resolve => setTimeout(resolve, TIMINGS.API_CALL_DELAY));
-    } else {
-      // Call proxy backend server
-      console.log('🌐 Fetching WHOIS data via proxy for:', cleanDomain);
+      console.log('🔧 WHOIS verification disabled, skipping domain age check for:', cleanDomain);
+      return {
+        domain,
+        ageInDays: null,
+        registrar: null,
+        isSuspicious: false,
+        signals: [], // No signals when WHOIS is disabled
+        creationDate: null,
+        expirationDate: null,
+        updatedDate: null,
+        dnssec: null,
+        nameServers: null,
+        registrantEmail: null,
+        status: null,
+        whoisServer: null,
+      };
+    }
 
-      const response = await fetch(
-        `${getApiUrl('whois')}/${cleanDomain}`,
-        {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-        }
-      );
+    // Call proxy backend server for real WHOIS data
+    console.log('🌐 Fetching WHOIS data via proxy for:', cleanDomain);
 
-      if (!response.ok) {
-        throw new Error(`Proxy server error: ${response.status} ${response.statusText}`);
+    const response = await fetch(
+      `${getApiUrl('/api/whois')}/${cleanDomain}`,
+      {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+        },
       }
+    );
 
-      const proxyResponse = await response.json();
+    if (!response.ok) {
+      throw new Error(`Proxy server error: ${response.status} ${response.statusText}`);
+    }
 
-      if (!proxyResponse.success) {
-        throw new Error(proxyResponse.error || 'Proxy server returned an error');
-      }
+    const proxyResponse = await response.json();
 
-      whoisData = proxyResponse.data;
-      
-      console.log('📥 WHOIS data from proxy:', whoisData);
+    if (!proxyResponse.success) {
+      throw new Error(proxyResponse.error || 'Proxy server returned an error');
+    }
 
-      // Parse the creation_date from proxy response
-      const createdDate = whoisData.creation_date;
-      
-      if (!createdDate) {
-        console.warn('⚠️ No creation date found in WHOIS data for:', cleanDomain);
-        // Return partial data even without creation date
-        return {
-          domain,
-          ageInDays: null,
-          registrar: whoisData.registrar || null,
-          isSuspicious: false,
-          signals: [{
-            id: 'no-creation-date',
-            score: 0,
-            reason: 'Domain creation date not available',
-            severity: 'low',
-            category: 'legitimacy',
-            source: 'heuristic',
-            details: 'WHOIS data incomplete - this is not necessarily suspicious',
-          }],
-          creationDate: null,
-          expirationDate: whoisData.expiration_date || null,
-          updatedDate: whoisData.updated_date || null,
-          dnssec: whoisData.dnssec || null,
-          nameServers: whoisData.name_servers || null,
-          registrantEmail: whoisData.emails || null,
-          status: whoisData.status || null,
-          whoisServer: whoisData.whois_server || null,
-        };
-      }
+    let whoisData = proxyResponse.data;
+    
+    console.log('📥 WHOIS data from proxy:', whoisData);
 
-      // Calculate domain age from creation_date
-      // Format: "1997-09-15 04:00:00" or "1997-09-15T04:00:00Z"
-      const created = new Date(createdDate);
-      
-      // Validate date
-      if (isNaN(created.getTime())) {
-        console.warn('⚠️ Invalid creation date format:', createdDate);
-        throw new Error('Invalid date format in WHOIS response');
-      }
-
-      const ageInDays = Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24));
-      const ageInYears = Math.floor(ageInDays / 365);
-
-      // Extract all important fields from WHOIS response
-      whoisData = {
-        createdDate,
+    // Parse the creation_date from proxy response
+    const createdDate = whoisData.creation_date;
+    
+    if (!createdDate) {
+      console.warn('⚠️ No creation date found in WHOIS data for:', cleanDomain);
+      // Return partial data even without creation date
+      return {
+        domain,
+        ageInDays: null,
         registrar: whoisData.registrar || null,
-        ageInDays,
-        ageInYears,
-        dnssec: whoisData.dnssec || null,
+        isSuspicious: false,
+        signals: [{
+          id: 'no-creation-date',
+          score: 0,
+          reason: 'Domain creation date not available',
+          severity: 'low',
+          category: 'legitimacy',
+          source: 'heuristic',
+          details: 'WHOIS data incomplete - this is not necessarily suspicious',
+        }],
+        creationDate: null,
         expirationDate: whoisData.expiration_date || null,
         updatedDate: whoisData.updated_date || null,
-        emails: whoisData.emails || null,
+        dnssec: whoisData.dnssec || null,
         nameServers: whoisData.name_servers || null,
-        status: whoisData.status || null, // Important: clientDeleteProhibited, etc.
+        registrantEmail: whoisData.emails || null,
+        status: whoisData.status || null,
         whoisServer: whoisData.whois_server || null,
-        domainName: whoisData.domain_name || null,
       };
-
-      console.log('📊 WHOIS data retrieved:', {
-        domain: whoisData.domainName || cleanDomain,
-        age: `${ageInDays} days (${ageInYears} years)`,
-        created: new Date(createdDate).toLocaleDateString(),
-        updated: whoisData.updatedDate ? new Date(whoisData.updatedDate).toLocaleDateString() : 'Unknown',
-        expires: whoisData.expirationDate ? new Date(whoisData.expirationDate).toLocaleDateString() : 'Unknown',
-        registrar: whoisData.registrar,
-        dnssec: whoisData.dnssec,
-        nameServers: whoisData.nameServers?.length || 0,
-        status: whoisData.status?.length || 0,
-        whoisServer: whoisData.whoisServer,
-      });
     }
+
+    // Calculate domain age from creation_date
+    // Format: "1997-09-15 04:00:00" or "1997-09-15T04:00:00Z"
+    const created = new Date(createdDate);
+    
+    // Validate date
+    if (isNaN(created.getTime())) {
+      console.warn('⚠️ Invalid creation date format:', createdDate);
+      throw new Error('Invalid date format in WHOIS response');
+    }
+
+    const ageInDays = Math.floor((Date.now() - created.getTime()) / (1000 * 60 * 60 * 24));
+    const ageInYears = Math.floor(ageInDays / 365);
+
+    // Extract all important fields from WHOIS response
+    whoisData = {
+      createdDate,
+      registrar: whoisData.registrar || null,
+      ageInDays,
+      ageInYears,
+      dnssec: whoisData.dnssec || null,
+      expirationDate: whoisData.expiration_date || null,
+      updatedDate: whoisData.updated_date || null,
+      emails: whoisData.emails || null,
+      nameServers: whoisData.name_servers || null,
+      status: whoisData.status || null, // Important: clientDeleteProhibited, etc.
+      whoisServer: whoisData.whois_server || null,
+      domainName: whoisData.domain_name || null,
+    };
+
+    console.log('📊 WHOIS data retrieved:', {
+      domain: whoisData.domainName || cleanDomain,
+      age: `${ageInDays} days (${ageInYears} years)`,
+      created: new Date(createdDate).toLocaleDateString(),
+      updated: whoisData.updatedDate ? new Date(whoisData.updatedDate).toLocaleDateString() : 'Unknown',
+      expires: whoisData.expirationDate ? new Date(whoisData.expirationDate).toLocaleDateString() : 'Unknown',
+      registrar: whoisData.registrar,
+      dnssec: whoisData.dnssec,
+      nameServers: whoisData.nameServers?.length || 0,
+      status: whoisData.status?.length || 0,
+      whoisServer: whoisData.whoisServer,
+    });
 
     const signals: RiskSignal[] = [];
 

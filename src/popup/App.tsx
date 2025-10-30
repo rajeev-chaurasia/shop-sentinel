@@ -26,7 +26,7 @@ function App() {
   const [isAnalyzingPolicy, setIsAnalyzingPolicy] = useState(false);
   
   const [theme, setTheme] = useState<'light' | 'dark' | 'auto'>('auto');
-  const [notifications, setNotifications] = useState(false);
+  const [notifications, setNotifications] = useState(true);
   
   const [operationLock, setOperationLock] = useState(false);
   const [isCheckingCache, setIsCheckingCache] = useState(false);
@@ -273,23 +273,27 @@ function App() {
               
               // Handle new format: { result, expiresAt }
               if (cached.result && cached.expiresAt && Date.now() < cached.expiresAt) {
-        if (isValidAnalysisResult(cached.result)) {
-          setAnalysisResult(cached.result);
-          setIsFromCache(true);
-          // Update icon badge for cached results
-          updateIconForCachedResult(cached.result);
-          // Show notification for risky cached results
-          showRiskNotification(cached.result);
-          if (isLoading) completeAnalysis();
+                if (isValidAnalysisResult(cached.result)) {
+                  console.log('✅ New analysis result received, completing analysis...');
+                  setAnalysisResult(cached.result);
+                  setIsFromCache(true);
+                  // Update icon badge for cached results
+                  updateIconForCachedResult(cached.result);
+                  // Show notification for risky cached results
+                  showRiskNotification(cached.result);
+                  // CRITICAL: Always complete analysis when result arrives
+                  completeAnalysis();
                 }
               }
               // Legacy support: direct result object (shouldn't happen with new storage format)
               else if (isValidAnalysisResult(cached)) {
+                console.log('✅ New analysis result received, completing analysis...');
                 setAnalysisResult(cached);
                 setIsFromCache(true);
                 // Update icon badge for cached results
                 updateIconForCachedResult(cached);
-                if (isLoading) completeAnalysis();
+                // CRITICAL: Always complete analysis when result arrives
+                completeAnalysis();
               }
             }
           }
@@ -311,6 +315,14 @@ function App() {
       }
     };
   }, [isLoading, isUpdating]);
+
+  // Auto-complete analysis when results arrive
+  useEffect(() => {
+    if (analysisResult && isLoading) {
+      console.log('✅ Analysis result detected while loading, completing analysis...');
+      completeAnalysis();
+    }
+  }, [analysisResult, isLoading, completeAnalysis]);
 
   // Load settings from localStorage on mount
   useEffect(() => {
@@ -340,7 +352,7 @@ function App() {
       console.log('🔔 Notification skipped:', {
         enabled: notifications,
         riskScore: result.totalRiskScore,
-        threshold: 30
+        threshold: 50
       });
       return;
     }
@@ -799,9 +811,12 @@ function App() {
       return;
     }
 
-    // If forcing refresh, clear cache and current results
+    // If forcing refresh, clear cache, locks, and current results
+    // This prevents "stuck re-analyzing" when settings change
     if (force) {
       await StorageService.clearCachedAnalysis(tab.url);
+      await StorageService.clearAnalysisProgress(tab.url); // Clear progress markers
+      await StorageService.clearLockForUrl(tab.url); // Clear any stale locks
       setAnalysisResult(null); // Clear current results to show loading state
     }
 
@@ -827,6 +842,34 @@ function App() {
     setIsUpdating(false);
   };
 
+  // Handle settings changes with async lock clearing (non-blocking)
+  const handleSettingChange = (callback: () => void, shouldClearLocks = true) => {
+    // Execute the state change immediately (synchronous)
+    callback();
+    
+    // Clear locks asynchronously in background (non-blocking)
+    if (shouldClearLocks && isLoading) {
+      MessagingService.getActiveTab().then(tab => {
+        if (tab?.url) {
+          console.log('🔧 Settings changed during analysis, clearing locks...');
+          StorageService.clearLockForUrl(tab.url).catch(err => 
+            console.warn('Failed to clear locks:', err)
+          );
+        }
+      }).catch(err => console.warn('Failed to get active tab:', err));
+    }
+  };
+
+  // Save AI setting to localStorage when it changes
+  useEffect(() => {
+    localStorage.setItem('shop-sentinel-use-ai', useAI.toString());
+  }, [useAI]);
+
+  // Save Whois setting to localStorage when it changes
+  useEffect(() => {
+    localStorage.setItem('shop-sentinel-use-whois', useWhoisVerification.toString());
+  }, [useWhoisVerification]);
+
   return (
     <div className="w-[420px] min-h-[600px] bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-700 dark:from-slate-800 dark:via-slate-700 dark:to-slate-800">
         <div className="h-full flex flex-col bg-white dark:bg-slate-800 rounded-b-xl">
@@ -841,8 +884,32 @@ function App() {
                 <p className="text-xs opacity-95 font-semibold">AI-Powered Shopping Safety</p>
               </div>
             </div>
-            <div className="w-9 h-9 bg-white bg-opacity-25 rounded-full flex items-center justify-center backdrop-blur-sm shadow-lg border-2 border-white border-opacity-30 cursor-pointer hover:bg-opacity-35 transition-all duration-200" onClick={() => setShowSettings(true)}>
-              <span className="text-xl">⚙️</span>
+            <div className="flex items-center gap-2">
+              {/* Re-analyze button (top-right, compact) */}
+              {currentResult && (
+                <button 
+                  onClick={() => handleAnalyze(true)} 
+                  disabled={isLoading}
+                  title="Re-analyze this page with current settings"
+                  className="px-3 py-2 bg-white bg-opacity-20 hover:bg-opacity-30 disabled:bg-opacity-10 disabled:cursor-not-allowed rounded-full text-sm font-semibold transition-all duration-200 flex items-center gap-1 border border-white border-opacity-30"
+                >
+                  {isLoading ? (
+                    <>
+                      <span className="animate-spin">🔄</span>
+                      <span className="hidden sm:inline">Analyzing</span>
+                    </>
+                  ) : (
+                    <>
+                      <span>🔄</span>
+                      <span className="hidden sm:inline">Re-analyze</span>
+                    </>
+                  )}
+                </button>
+              )}
+              {/* Settings button */}
+              <div className="w-9 h-9 bg-white bg-opacity-25 rounded-full flex items-center justify-center backdrop-blur-sm shadow-lg border-2 border-white border-opacity-30 cursor-pointer hover:bg-opacity-35 transition-all duration-200" onClick={() => setShowSettings(true)}>
+                <span className="text-xl">⚙️</span>
+              </div>
             </div>
           </div>
         </div>
@@ -1164,10 +1231,6 @@ function App() {
                         compact={true} 
                       />
                     </div>
-                  
-                    <button onClick={() => handleAnalyze(true)} disabled={isLoading} className="w-full mt-2 py-3 px-4 bg-gradient-to-r from-gray-100 to-gray-200 dark:from-slate-600 dark:to-slate-500 hover:from-gray-200 hover:to-gray-300 dark:hover:from-slate-500 dark:hover:to-slate-400 disabled:from-gray-50 disabled:to-gray-100 dark:disabled:from-slate-700 dark:disabled:to-slate-600 border-2 border-gray-300 dark:border-slate-400 text-gray-700 dark:text-slate-200 font-semibold rounded-xl transition-all duration-200 shadow-sm hover:shadow disabled:opacity-50 disabled:cursor-not-allowed">
-                      {isLoading ? '🔄 Re-analyzing...' : '🔄 Re-analyze Page'}
-                    </button>
                   </div>
                 )}
                 {activeTab === 'reasons' && (
@@ -1230,7 +1293,7 @@ function App() {
                       <input
                         type="checkbox"
                         checked={useAI}
-                        onChange={(e) => setUseAI(e.target.checked)}
+                        onChange={(e) => handleSettingChange(() => setUseAI(e.target.checked))}
                         className="sr-only peer"
                       />
                       <div className="w-11 h-6 bg-gray-200 dark:bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
@@ -1250,7 +1313,7 @@ function App() {
                       <input
                         type="checkbox"
                         checked={useWhoisVerification}
-                        onChange={(e) => setUseWhoisVerification(e.target.checked)}
+                        onChange={(e) => handleSettingChange(() => setUseWhoisVerification(e.target.checked))}
                         className="sr-only peer"
                       />
                       <div className="w-11 h-6 bg-gray-200 dark:bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
@@ -1368,7 +1431,7 @@ function App() {
                           setUseAI(true);
                           setUseWhoisVerification(false);
                           setTheme('auto');
-                          setNotifications(false);
+                          setNotifications(true);
                         }
                       }}
                       className="flex-1 py-2 px-3 bg-gradient-to-r from-red-100 to-red-200 dark:from-slate-600 dark:to-slate-500 hover:from-red-200 hover:to-red-300 dark:hover:from-slate-500 dark:hover:to-slate-400 border-2 border-red-300 dark:border-slate-400 text-red-700 dark:text-slate-200 font-semibold text-sm rounded-xl transition-all duration-200"

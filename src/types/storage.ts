@@ -32,23 +32,17 @@ export interface PolicyCache {
 }
 
 export interface UserSettings {
-  enableAIAnalysis: boolean;
-  enableAutoScan: boolean;
-  riskThreshold: number;
-  cacheExpiryHours: number;
-  sendAnonymousTelemetry: boolean;
+  useAI: boolean;
+  useWhoisVerification: boolean;
   theme: 'light' | 'dark' | 'auto';
-  compactMode: boolean;
+  enableNotifications: boolean;
 }
 
 export const DEFAULT_SETTINGS: UserSettings = {
-  enableAIAnalysis: true,
-  enableAutoScan: true,
-  riskThreshold: 50,
-  cacheExpiryHours: 24,
-  sendAnonymousTelemetry: false,
+  useAI: true,
+  useWhoisVerification: false,
   theme: 'auto',
-  compactMode: false,
+  enableNotifications: true,
 };
 
 export interface SiteFingerprint {
