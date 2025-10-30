@@ -1627,9 +1627,8 @@ class JobTracker {
             type: 'ANALYSIS_PROGRESS',
             jobId,
             progress: job.progress,
-            stage: job.current_stage,
+            stage: job.current_stage || 'unknown',
             source: 'job-tracker',
-            estimatedTimeRemaining: this.estimateTimeRemaining(session),
           }).catch(() => {
             // Popup may not be open, that's okay
           });

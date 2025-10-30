@@ -1,7 +1,6 @@
 interface AnalysisProgressProps {
   progress: number; // 0-100
   stage: string; // 'metadata', 'heuristics', 'ai_analysis', etc
-  estimatedTimeRemaining?: number; // milliseconds
   isActive?: boolean;
   className?: string;
 }
@@ -9,7 +8,6 @@ interface AnalysisProgressProps {
 export function AnalysisProgress({
   progress,
   stage,
-  estimatedTimeRemaining,
   isActive = true,
   className = ''
 }: AnalysisProgressProps) {
@@ -39,15 +37,6 @@ export function AnalysisProgress({
 
   const currentStage = stageInfo[stage] || stageInfo['metadata'];
 
-  // Calculate time remaining display
-  const getTimeRemaining = () => {
-    if (!estimatedTimeRemaining || estimatedTimeRemaining <= 0) return null;
-    const seconds = Math.ceil(estimatedTimeRemaining / 1000);
-    if (seconds < 60) return `~${seconds}s`;
-    const minutes = Math.ceil(seconds / 60);
-    return `~${minutes}m`;
-  };
-
   // Calculate current stage percentage within the progress
   const getStageProgress = () => {
     // Map stages to percentage ranges
@@ -69,7 +58,6 @@ export function AnalysisProgress({
   };
 
   const stageProgress = getStageProgress();
-  const timeRemaining = getTimeRemaining();
 
   if (!isActive) {
     return null;
@@ -93,13 +81,6 @@ export function AnalysisProgress({
             {currentStage.description}
           </div>
         </div>
-
-        {/* Time remaining */}
-        {timeRemaining && (
-          <div className="text-xs text-blue-600 dark:text-blue-400 font-medium flex-shrink-0">
-            {timeRemaining}
-          </div>
-        )}
       </div>
 
       {/* Progress bar */}

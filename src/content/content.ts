@@ -370,6 +370,7 @@ async function handleAnalyzePage(payload: any) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             progress: Math.min(Math.max(progress, 0), 100),
+            status: 'in_progress',  // ← Add status so backend logs show real status
             stage,
             sessionId,
             ...data,
@@ -700,6 +701,8 @@ async function handleAnalyzePage(payload: any) {
               status: 'completed',
               progress: 100,
               phase: 'completed',
+              // Ensure backend's current_stage is set so UI can render final stage
+              stage: 'completed',
               result: analysis,
               sessionId,
               completedAt: new Date().toISOString(),
@@ -719,6 +722,18 @@ async function handleAnalyzePage(payload: any) {
       
       // Broadcast analysis completion to other tabs
       crossTabSync.broadcastAnalysisUpdate(window.location.href, analysis);
+      
+      // Send direct message to popup to notify completion immediately
+      // This ensures popup gets notified even if storage events are missed
+      try {
+        chrome.runtime.sendMessage({
+          action: 'ANALYSIS_COMPLETE',
+          payload: analysis
+        }).catch(err => console.warn('⚠️ Popup not open or message failed:', err));
+        console.log('📢 Analysis completion message sent to popup');
+      } catch (messageError) {
+        console.warn('⚠️ Failed to send completion message:', messageError);
+      }
     } catch (cacheError) {
       console.warn('⚠️ Failed to cache analysis:', cacheError);
     } finally {

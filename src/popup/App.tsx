@@ -44,7 +44,6 @@ function App() {
     setError,
     backendJobProgress,
     backendJobStage,
-    backendJobEstimatedTimeRemaining,
     updateBackendJobProgress,
     setBackendJob,
   } = useAnalysisStore();
@@ -168,8 +167,7 @@ function App() {
             response.progress,
             'processing',
             '',
-            response.stage,
-            response.estimatedTimeRemaining
+            response.stage
           );
         }
       } catch (error) {
@@ -404,7 +402,7 @@ function App() {
     }
   }, [theme]);
 
-  // Listen for partial analysis results from content script
+  // Listen for partial analysis results and analysis completion from content script
   useEffect(() => {
     const handleRuntimeMessage = async (message: any) => {
       if (message.action === 'PARTIAL_ANALYSIS_RESULT' && message.payload) {
@@ -422,6 +420,40 @@ function App() {
         } catch (error) {
           console.warn('⚠️ Failed to persist partial result:', error);
         }
+      } else if (message.action === 'ANALYSIS_COMPLETE' && message.payload) {
+        // Handle direct completion notification from content script
+        console.log('✅ Received ANALYSIS_COMPLETE message immediately from content script');
+        const result = message.payload;
+        
+        if (isValidAnalysisResult(result)) {
+          console.log('✅ Analysis complete, displaying results immediately');
+          setAnalysisResult(result);
+          setIsFromCache(false);
+          completeAnalysis();
+          
+          // Update icon badge
+          updateIconForCachedResult(result);
+          
+          // Show notification for risky sites
+          showRiskNotification(result);
+          
+          // Clear polling intervals as result is ready
+          if (pollInterval) {
+            clearInterval(pollInterval);
+            setPollInterval(null);
+          }
+          
+          // Clear partial results since we now have final results
+          try {
+            const tab = await MessagingService.getActiveTab();
+            if (tab?.url) {
+              const pageType = result.pageType || 'other';
+              await StorageService.clearPartialResult(tab.url, pageType);
+            }
+          } catch (error) {
+            console.warn('⚠️ Failed to clear partial results:', error);
+          }
+        }
       }
     };
 
@@ -430,7 +462,7 @@ function App() {
     return () => {
       chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
     };
-  }, [setPartialResult]);
+  }, [setPartialResult, completeAnalysis, pollInterval]);
 
   // Listen for cross-tab synchronization messages
   useEffect(() => {
@@ -489,9 +521,9 @@ function App() {
   useEffect(() => {
     const handleProgressMessage = (message: any) => {
       if (message.type === 'ANALYSIS_PROGRESS') {
-        const { progress, stage, estimatedTimeRemaining } = message;
-        console.log('📊 Progress update:', { progress, stage, estimatedTimeRemaining });
-        updateBackendJobProgress(progress, 'processing', '', stage, estimatedTimeRemaining);
+        const { progress, stage } = message;
+        console.log('📊 Progress update:', { progress, stage });
+        updateBackendJobProgress(progress, 'processing', '', stage);
       } else if (message.type === 'BACKEND_JOB_STARTED') {
         const { jobId } = message;
         console.log('🚀 Backend job started:', jobId);
@@ -1015,7 +1047,6 @@ function App() {
                     <AnalysisProgress
                       progress={backendJobProgress}
                       stage={backendJobStage}
-                      estimatedTimeRemaining={backendJobEstimatedTimeRemaining || undefined}
                       isActive={true}
                     />
                   </div>

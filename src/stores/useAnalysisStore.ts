@@ -50,7 +50,6 @@ interface AnalysisState {
   backendJobStatus: 'idle' | 'pending' | 'processing' | 'completed' | 'failed';
   backendJobMessage: string;
   backendJobStage: string; // 'metadata', 'heuristics', 'ai_analysis', 'completed'
-  backendJobEstimatedTimeRemaining: number | null; // milliseconds
   
   // Enhanced AI-specific state
   aiState: {
@@ -83,7 +82,7 @@ interface AnalysisActions {
   
   // Backend job progress actions
   setBackendJob: (jobId: string) => void;
-  updateBackendJobProgress: (progress: number, status?: string, message?: string, stage?: string, estimatedTimeRemaining?: number | null) => void;
+  updateBackendJobProgress: (progress: number, status?: string, message?: string, stage?: string) => void;
   clearBackendJob: () => void;
   
   // Enhanced AI-specific actions
@@ -131,7 +130,6 @@ const initialState: AnalysisState = {
   backendJobStatus: 'idle',
   backendJobMessage: '',
   backendJobStage: 'metadata',
-  backendJobEstimatedTimeRemaining: null,
   
   aiState: initialAIState,
 };
@@ -242,13 +240,12 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
     persistState(get(), 'analysisStore'); // Auto-persist
   },
 
-  updateBackendJobProgress: (progress: number, status?: string, message?: string, stage?: string, estimatedTimeRemaining?: number | null) => {
+  updateBackendJobProgress: (progress: number, status?: string, message?: string, stage?: string) => {
     const newState = {
       backendJobProgress: Math.min(100, Math.max(0, progress)),
       backendJobStatus: (status as any) || get().backendJobStatus,
       backendJobMessage: message || get().backendJobMessage,
       backendJobStage: stage || get().backendJobStage,
-      backendJobEstimatedTimeRemaining: estimatedTimeRemaining !== undefined ? estimatedTimeRemaining : get().backendJobEstimatedTimeRemaining
     };
     set(newState);
     persistState(get(), 'analysisStore'); // Auto-persist
@@ -261,7 +258,6 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
       backendJobStatus: 'idle' as const,
       backendJobMessage: '',
       backendJobStage: 'metadata',
-      backendJobEstimatedTimeRemaining: null
     };
     set(newState);
     persistState(get(), 'analysisStore'); // Auto-persist
