@@ -6,7 +6,7 @@ import { cacheService } from '../services/cache';
 import { crossTabSync } from '../services/crossTabSync';
 import { PolicyDetectionService } from '../services/policyDetection';
 import type { AnalysisResult } from '../types';
-import { RiskMeter, ReasonsList, PolicySummary } from '../components';
+import { RiskMeter, ReasonsList, PolicySummary, AnalysisProgress } from '../components';
 import { createErrorFromMessage } from '../types/errors';
 import { TIMINGS } from '../config/constants';
 import { getApiUrl } from '../config/env';
@@ -42,6 +42,10 @@ function App() {
     setPartialResult,
     completeAnalysis,
     setError,
+    backendJobProgress,
+    backendJobStage,
+    updateBackendJobProgress,
+    setBackendJob,
   } = useAnalysisStore();
 
   // Use full results if available, otherwise partial results
@@ -147,6 +151,35 @@ function App() {
       }
     };
   }, []);
+
+  // Restore job progress when popup opens (handles tab close/reopen)
+  useEffect(() => {
+    const restoreActiveJob = async () => {
+      try {
+        const response = await chrome.runtime.sendMessage({
+          action: 'GET_ACTIVE_JOB'
+        });
+
+        if (response?.success && response?.jobId) {
+          console.log('📊 Restoring active job on popup open:', response);
+          // Update store with the active job progress
+          updateBackendJobProgress(
+            response.progress,
+            'processing',
+            '',
+            response.stage
+          );
+        }
+      } catch (error) {
+        console.warn('⚠️ Failed to restore active job:', error);
+      }
+    };
+
+    // Only restore if we don't already have a job ID
+    if (!backendJobProgress || backendJobProgress === 0) {
+      restoreActiveJob();
+    }
+  }, []); // Only run on mount
 
   // Poll for results when in loading state (non-blocking, no isUpdating guard)
   useEffect(() => {
@@ -369,7 +402,7 @@ function App() {
     }
   }, [theme]);
 
-  // Listen for partial analysis results from content script
+  // Listen for partial analysis results and analysis completion from content script
   useEffect(() => {
     const handleRuntimeMessage = async (message: any) => {
       if (message.action === 'PARTIAL_ANALYSIS_RESULT' && message.payload) {
@@ -387,6 +420,40 @@ function App() {
         } catch (error) {
           console.warn('⚠️ Failed to persist partial result:', error);
         }
+      } else if (message.action === 'ANALYSIS_COMPLETE' && message.payload) {
+        // Handle direct completion notification from content script
+        console.log('✅ Received ANALYSIS_COMPLETE message immediately from content script');
+        const result = message.payload;
+        
+        if (isValidAnalysisResult(result)) {
+          console.log('✅ Analysis complete, displaying results immediately');
+          setAnalysisResult(result);
+          setIsFromCache(false);
+          completeAnalysis();
+          
+          // Update icon badge
+          updateIconForCachedResult(result);
+          
+          // Show notification for risky sites
+          showRiskNotification(result);
+          
+          // Clear polling intervals as result is ready
+          if (pollInterval) {
+            clearInterval(pollInterval);
+            setPollInterval(null);
+          }
+          
+          // Clear partial results since we now have final results
+          try {
+            const tab = await MessagingService.getActiveTab();
+            if (tab?.url) {
+              const pageType = result.pageType || 'other';
+              await StorageService.clearPartialResult(tab.url, pageType);
+            }
+          } catch (error) {
+            console.warn('⚠️ Failed to clear partial results:', error);
+          }
+        }
       }
     };
 
@@ -395,7 +462,7 @@ function App() {
     return () => {
       chrome.runtime.onMessage.removeListener(handleRuntimeMessage);
     };
-  }, [setPartialResult]);
+  }, [setPartialResult, completeAnalysis, pollInterval]);
 
   // Listen for cross-tab synchronization messages
   useEffect(() => {
@@ -449,6 +516,29 @@ function App() {
       unsubscribeAnalysisStart();
     };
   }, [currentUrl, isLoading]);
+
+  // Listen for backend job progress updates
+  useEffect(() => {
+    const handleProgressMessage = (message: any) => {
+      if (message.type === 'ANALYSIS_PROGRESS') {
+        const { progress, stage } = message;
+        console.log('📊 Progress update:', { progress, stage });
+        updateBackendJobProgress(progress, 'processing', '', stage);
+      } else if (message.type === 'BACKEND_JOB_STARTED') {
+        const { jobId } = message;
+        console.log('🚀 Backend job started:', jobId);
+        setBackendJob(jobId);
+      }
+    };
+
+    // Listen for messages from service worker
+    chrome.runtime.onMessage.addListener(handleProgressMessage);
+
+    // Cleanup: remove listener when effect re-runs or component unmounts
+    return () => {
+      chrome.runtime.onMessage.removeListener(handleProgressMessage);
+    };
+  }, [updateBackendJobProgress, setBackendJob]);
 
   const initializePopup = async () => {
     // Load persisted analysis state from storage
@@ -950,6 +1040,17 @@ function App() {
                   <span className="inline-block w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></span>
                   <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
                 </div>
+                
+                {/* Backend job progress if available */}
+                {backendJobProgress > 0 && (
+                  <div className="mt-6 px-4 w-full max-w-sm">
+                    <AnalysisProgress
+                      progress={backendJobProgress}
+                      stage={backendJobStage}
+                      isActive={true}
+                    />
+                  </div>
+                )}
               </div>
             </div>
           )}

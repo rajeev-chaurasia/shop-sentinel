@@ -361,7 +361,7 @@ async function handleAnalyzePage(payload: any) {
     }
     
     // Helper function to update backend job progress
-    const updateBackendJobProgress = async (progress: number, phase: string, data?: any) => {
+    const updateBackendJobProgress = async (progress: number, stage: string, data?: any) => {
       if (!backendJobId) return;
       
       try {
@@ -370,7 +370,8 @@ async function handleAnalyzePage(payload: any) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             progress: Math.min(Math.max(progress, 0), 100),
-            phase,
+            status: 'in_progress',  // ← Add status so backend logs show real status
+            stage,
             sessionId,
             ...data,
           })
@@ -421,7 +422,7 @@ async function handleAnalyzePage(payload: any) {
     ]);
     
     // Update backend job: heuristics complete (30% progress)
-    await updateBackendJobProgress(30, 'heuristics_complete', {
+    await updateBackendJobProgress(30, 'heuristics', {
       heuristicsFinished: true,
       hasSecurityIssues: security.signals.length > 0,
       hasDomainIssues: domain.signals.length > 0,
@@ -562,7 +563,7 @@ async function handleAnalyzePage(payload: any) {
           console.log(`✅ AI found ${aiSignals.length} signals in ${aiAnalysisTime.toFixed(0)}ms (parallel)`);
           
           // Update backend job: AI analysis complete (65% progress)
-          await updateBackendJobProgress(65, 'ai_complete', {
+          await updateBackendJobProgress(65, 'ai_analysis', {
             aiFinished: true,
             aiSignalsFound: aiSignals.length,
           });
@@ -700,6 +701,8 @@ async function handleAnalyzePage(payload: any) {
               status: 'completed',
               progress: 100,
               phase: 'completed',
+              // Ensure backend's current_stage is set so UI can render final stage
+              stage: 'completed',
               result: analysis,
               sessionId,
               completedAt: new Date().toISOString(),
@@ -719,6 +722,18 @@ async function handleAnalyzePage(payload: any) {
       
       // Broadcast analysis completion to other tabs
       crossTabSync.broadcastAnalysisUpdate(window.location.href, analysis);
+      
+      // Send direct message to popup to notify completion immediately
+      // This ensures popup gets notified even if storage events are missed
+      try {
+        chrome.runtime.sendMessage({
+          action: 'ANALYSIS_COMPLETE',
+          payload: analysis
+        }).catch(err => console.warn('⚠️ Popup not open or message failed:', err));
+        console.log('📢 Analysis completion message sent to popup');
+      } catch (messageError) {
+        console.warn('⚠️ Failed to send completion message:', messageError);
+      }
     } catch (cacheError) {
       console.warn('⚠️ Failed to cache analysis:', cacheError);
     } finally {

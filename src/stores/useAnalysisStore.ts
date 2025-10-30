@@ -49,6 +49,7 @@ interface AnalysisState {
   backendJobProgress: number;
   backendJobStatus: 'idle' | 'pending' | 'processing' | 'completed' | 'failed';
   backendJobMessage: string;
+  backendJobStage: string; // 'metadata', 'heuristics', 'ai_analysis', 'completed'
   
   // Enhanced AI-specific state
   aiState: {
@@ -81,7 +82,7 @@ interface AnalysisActions {
   
   // Backend job progress actions
   setBackendJob: (jobId: string) => void;
-  updateBackendJobProgress: (progress: number, status?: string, message?: string) => void;
+  updateBackendJobProgress: (progress: number, status?: string, message?: string, stage?: string) => void;
   clearBackendJob: () => void;
   
   // Enhanced AI-specific actions
@@ -128,6 +129,7 @@ const initialState: AnalysisState = {
   backendJobProgress: 0,
   backendJobStatus: 'idle',
   backendJobMessage: '',
+  backendJobStage: 'metadata',
   
   aiState: initialAIState,
 };
@@ -238,11 +240,12 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
     persistState(get(), 'analysisStore'); // Auto-persist
   },
 
-  updateBackendJobProgress: (progress: number, status?: string, message?: string) => {
+  updateBackendJobProgress: (progress: number, status?: string, message?: string, stage?: string) => {
     const newState = {
       backendJobProgress: Math.min(100, Math.max(0, progress)),
       backendJobStatus: (status as any) || get().backendJobStatus,
-      backendJobMessage: message || get().backendJobMessage
+      backendJobMessage: message || get().backendJobMessage,
+      backendJobStage: stage || get().backendJobStage,
     };
     set(newState);
     persistState(get(), 'analysisStore'); // Auto-persist
@@ -253,7 +256,8 @@ export const useAnalysisStore = create<AnalysisStore>((set, get) => ({
       backendJobId: null,
       backendJobProgress: 0,
       backendJobStatus: 'idle' as const,
-      backendJobMessage: ''
+      backendJobMessage: '',
+      backendJobStage: 'metadata',
     };
     set(newState);
     persistState(get(), 'analysisStore'); // Auto-persist
