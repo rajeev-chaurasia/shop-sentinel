@@ -12,6 +12,7 @@ export interface RiskSignal {
   textSnippet?: string;
   elementType?: 'button' | 'timer' | 'form' | 'text' | 'image' | 'other';
   context?: string;
+  impactPercentage?: number; // Percentage of final score this signal contributes (0-100)
 }
 
 export interface SecurityAnalysis {
@@ -128,6 +129,8 @@ export interface AnalysisResult {
   aiSignalsCount?: number;
   status?: 'success' | 'error' | 'in_progress';
   error?: string;
+  domainAgeInDays?: number | null; // Age of domain in days
+  trustFactor?: number; // 0.0-1.0: calculated from domain age
 }
 
 export interface PolicySummary {

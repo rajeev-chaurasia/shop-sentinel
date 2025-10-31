@@ -1,7 +1,6 @@
 import { AnalysisResult, PolicySummary } from './analysis';
 
 export const STORAGE_KEYS = {
-  ANALYSIS_CACHE: 'analysisCache',
   POLICY_CACHE: 'policyCache',
   USER_SETTINGS: 'userSettings',
   SITE_FINGERPRINTS: 'siteFingerprints',
@@ -14,10 +13,6 @@ export interface CachedAnalysis {
   result: AnalysisResult;
   cachedAt: number;
   expiresAt: number;
-}
-
-export interface AnalysisCache {
-  [url: string]: CachedAnalysis;
 }
 
 export interface CachedPolicy {
@@ -33,14 +28,12 @@ export interface PolicyCache {
 
 export interface UserSettings {
   useAI: boolean;
-  useWhoisVerification: boolean;
   theme: 'light' | 'dark' | 'auto';
   enableNotifications: boolean;
 }
 
 export const DEFAULT_SETTINGS: UserSettings = {
   useAI: true,
-  useWhoisVerification: false,
   theme: 'auto',
   enableNotifications: true,
 };
@@ -58,7 +51,6 @@ export interface SiteFingerprintStore {
 }
 
 export interface StorageSchema {
-  [STORAGE_KEYS.ANALYSIS_CACHE]: AnalysisCache;
   [STORAGE_KEYS.POLICY_CACHE]: PolicyCache;
   [STORAGE_KEYS.USER_SETTINGS]: UserSettings;
   [STORAGE_KEYS.SITE_FINGERPRINTS]: SiteFingerprintStore;

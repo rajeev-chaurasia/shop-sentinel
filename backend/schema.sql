@@ -25,21 +25,10 @@ CREATE TABLE IF NOT EXISTS job_results (
   created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- Analysis cache table:
-CREATE TABLE IF NOT EXISTS analysis_cache (
-  url_hash VARCHAR(64) PRIMARY KEY,
-  url TEXT NOT NULL,
-  page_type VARCHAR(100),
-  result_data JSONB,
-  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-  expires_at TIMESTAMP
-);
-
 -- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_jobs_status ON jobs(status);
 CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_url_page_type ON jobs(url, page_type);
 CREATE INDEX IF NOT EXISTS idx_jobs_url_page_type_status ON jobs(url, page_type, status) WHERE status = 'completed';
-CREATE INDEX IF NOT EXISTS idx_analysis_cache_expires_at ON analysis_cache(expires_at);
 ```

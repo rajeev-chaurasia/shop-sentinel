@@ -14,7 +14,6 @@ import { getApiUrl } from '../config/env';
 function App() {
   const [activeTab, setActiveTab] = useState<'overview' | 'reasons' | 'policies'>('overview');
   const [useAI, setUseAI] = useState(true);
-  const [useWhoisVerification, setUseWhoisVerification] = useState(false);
   const [isFromCache, setIsFromCache] = useState(false);
   const [pollInterval, setPollInterval] = useState<number | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
@@ -324,18 +323,59 @@ function App() {
     }
   }, [analysisResult, isLoading, completeAnalysis]);
 
+  // Monitor active tab URL changes and detect domain switches (even after popup close/reopen)
+  useEffect(() => {
+    let isMounted = true;
+    const POPUP_LAST_TAB_KEY = 'shop-sentinel-popup-last-tab-url';
+    
+    const monitorTabChange = setInterval(async () => {
+      if (!isMounted) return;
+      
+      try {
+        const tab = await MessagingService.getActiveTab();
+        if (!tab?.url) return;
+        
+        // Get the last known URL from storage
+        const stored = await chrome.storage.local.get(POPUP_LAST_TAB_KEY);
+        const previousUrl = stored[POPUP_LAST_TAB_KEY] as string | undefined;
+        
+        const newDomain = new URL(tab.url).hostname;
+        const previousDomain = previousUrl ? new URL(previousUrl).hostname : null;
+        
+        // Check if domain has changed
+        if (previousDomain && newDomain !== previousDomain) {
+          console.log(`🔄 Domain changed from ${previousDomain} to ${newDomain}`);
+          
+          // Clear cached analysis for old domain
+          setAnalysisResult(null);
+          setPartialResult(null);
+          setIsFromCache(false);
+          
+          // Load fresh cache for new domain
+          await loadCachedAnalysisFull();
+        }
+        
+        // Always persist current URL to storage for next check
+        await chrome.storage.local.set({ [POPUP_LAST_TAB_KEY]: tab.url });
+      } catch (error) {
+        // Silently ignore errors in monitoring
+      }
+    }, 500); // Check every 500ms
+    
+    return () => {
+      isMounted = false;
+      clearInterval(monitorTabChange);
+    };
+  }, []);
+
   // Load settings from localStorage on mount
   useEffect(() => {
     const savedUseAI = localStorage.getItem('shop-sentinel-use-ai');
-    const savedUseWhois = localStorage.getItem('shop-sentinel-use-whois');
     const savedTheme = localStorage.getItem('shop-sentinel-theme');
     const savedNotifications = localStorage.getItem('shop-sentinel-notifications');
 
     if (savedUseAI !== null) {
       setUseAI(savedUseAI === 'true');
-    }
-    if (savedUseWhois !== null) {
-      setUseWhoisVerification(savedUseWhois === 'true');
     }
     if (savedTheme !== null) {
       setTheme(savedTheme as 'light' | 'dark' | 'auto');
@@ -377,10 +417,6 @@ function App() {
       console.error('❌ Failed to show notification:', error);
     }
   };
-
-  useEffect(() => {
-    localStorage.setItem('shop-sentinel-use-whois', useWhoisVerification.toString());
-  }, [useWhoisVerification]);
 
   useEffect(() => {
     localStorage.setItem('shop-sentinel-theme', theme);
@@ -774,7 +810,7 @@ function App() {
         startAnalysis(tab.url);
         const response = await MessagingService.sendToActiveTab<any, AnalysisResult>(
           'ANALYZE_PAGE',
-          { url: tab.url, includeAI: useAI, includeWhois: useWhoisVerification, delta: true }
+          { url: tab.url, includeAI: useAI, includeWhois: true, delta: true }
         );
         if (response.success && response.data) {
           setAnalysisResult(response.data);
@@ -825,7 +861,7 @@ function App() {
     // Start analysis asynchronously - don't wait for response since results come via cross-tab sync
     MessagingService.sendToActiveTab<any, AnalysisResult>(
       'ANALYZE_PAGE',
-      { url: tab.url, includeAI: useAI, includeWhois: useWhoisVerification }
+      { url: tab.url, includeAI: useAI, includeWhois: true }
     ).then((response) => {
       if (response.success && response.data) {
         console.log('✅ Analysis response received, but results will come via cross-tab sync');
@@ -864,11 +900,6 @@ function App() {
   useEffect(() => {
     localStorage.setItem('shop-sentinel-use-ai', useAI.toString());
   }, [useAI]);
-
-  // Save Whois setting to localStorage when it changes
-  useEffect(() => {
-    localStorage.setItem('shop-sentinel-use-whois', useWhoisVerification.toString());
-  }, [useWhoisVerification]);
 
   return (
     <div className="w-[420px] min-h-[600px] bg-gradient-to-br from-blue-600 via-indigo-600 to-purple-700 dark:from-slate-800 dark:via-slate-700 dark:to-slate-800">
@@ -1159,6 +1190,23 @@ function App() {
                       <RiskMeter score={currentResult!.totalRiskScore} level={currentResult!.riskLevel} size="large" animated={true} />
                     </div>
                     
+                    {/* Trust-Based Dampening Indicator */}
+                    {currentResult!.trustFactor !== undefined && currentResult!.trustFactor > 0.6 && (
+                      <div className="flex items-start gap-2 px-4 py-3 bg-gradient-to-r from-emerald-50 to-teal-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-emerald-300 dark:border-slate-500">
+                        <span className="text-lg flex-shrink-0 mt-0.5">🛡️</span>
+                        <div className="flex-1 min-w-0">
+                          <p className="text-sm font-bold text-gray-800 dark:text-gray-200">
+                            Score adjusted for established domain
+                          </p>
+                          <p className="text-xs text-gray-600 dark:text-gray-400 mt-1">
+                            This domain has been verified and is{' '}
+                            {currentResult!.trustFactor > 0.8 ? 'highly trusted' : 'well-established'}
+                            . Security concerns are dampened accordingly.
+                          </p>
+                        </div>
+                      </div>
+                    )}
+                    
                     {/* AI Status Indicator */}
                     {showOfflineMode ? (
                       <div className="flex items-center justify-center gap-2 px-4 py-2.5 bg-gradient-to-r from-yellow-50 to-orange-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-yellow-300 dark:border-slate-500">
@@ -1299,26 +1347,6 @@ function App() {
                       <div className="w-11 h-6 bg-gray-200 dark:bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-purple-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-purple-600"></div>
                     </label>
                   </div>
-
-                  {/* Domain Trust Check */}
-                  <div className="flex items-center justify-between p-4 bg-gradient-to-r from-blue-50 to-cyan-50 dark:from-slate-700 dark:to-slate-600 rounded-xl border border-blue-200 dark:border-slate-500">
-                    <div className="flex items-center gap-3">
-                      <span className="text-2xl">🛡️</span>
-                      <div>
-                        <div className="text-sm font-bold text-gray-800 dark:text-gray-200">Website Legitimacy Check</div>
-                        <div className="text-xs text-gray-600 dark:text-gray-400">Verify if the site is trustworthy and established</div>
-                      </div>
-                    </div>
-                    <label className="relative inline-flex items-center cursor-pointer">
-                      <input
-                        type="checkbox"
-                        checked={useWhoisVerification}
-                        onChange={(e) => handleSettingChange(() => setUseWhoisVerification(e.target.checked))}
-                        className="sr-only peer"
-                      />
-                      <div className="w-11 h-6 bg-gray-200 dark:bg-gray-600 peer-focus:outline-none peer-focus:ring-4 peer-focus:ring-blue-300 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
-                    </label>
-                  </div>
                 </div>
 
                 {/* Preferences */}
@@ -1429,7 +1457,6 @@ function App() {
                       onClick={() => {
                         if (confirm('Reset all settings to defaults?')) {
                           setUseAI(true);
-                          setUseWhoisVerification(false);
                           setTheme('auto');
                           setNotifications(true);
                         }

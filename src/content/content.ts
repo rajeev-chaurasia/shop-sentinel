@@ -417,7 +417,7 @@ async function handleAnalyzePage(payload: any) {
       { security, domain, payment },
       { contact, policies }
     ] = await Promise.all([
-      runDomainSecurityChecks(payload?.includeWhois),
+      runDomainSecurityChecks(),
       runContentPolicyChecks()
     ]);
     
@@ -437,7 +437,7 @@ async function handleAnalyzePage(payload: any) {
       ...policies.signals,
     ];
     
-    const heuristicRiskAnalysis = RiskCalculator.calculateScore(heuristicSignals);
+    const heuristicRiskAnalysis = RiskCalculator.calculateScore(heuristicSignals, domain?.ageInDays || null, contact);
     await sendPartialResult({
       security,
       domain,
@@ -532,8 +532,6 @@ async function handleAnalyzePage(payload: any) {
                 domainAgeYears: domain.ageInDays ? Math.floor(domain.ageInDays / 365) : null,
                 domainStatus: domain.status,
                 domainRegistrar: domain.registrar,
-                // Indicate whether domain checking was enabled
-                domainCheckEnabled: payload?.includeWhois || false,
               })
             });
 
@@ -570,7 +568,7 @@ async function handleAnalyzePage(payload: any) {
           
           // Send partial result after AI analysis
           const allSignalsWithAI = [...heuristicSignals, ...aiSignals];
-          const aiRiskAnalysis = RiskCalculator.calculateScore(allSignalsWithAI);
+          const aiRiskAnalysis = RiskCalculator.calculateScore(allSignalsWithAI, domain?.ageInDays || null, contact);
           await sendPartialResult({
             security,
             domain,
@@ -617,7 +615,9 @@ async function handleAnalyzePage(payload: any) {
     ];
     
     // Use smart risk calculator with deduplication and proper normalization
-    const riskAnalysis = RiskCalculator.calculateScore(allSignals);
+    // Pass domain age for trust factor calculation (critical for dampening)
+    const domainAgeInDays = domain?.ageInDays || null;
+    const riskAnalysis = RiskCalculator.calculateScore(allSignals, domainAgeInDays, contact);
     const totalRiskScore = riskAnalysis.totalScore; // Guaranteed 0-100
     const riskLevel = riskAnalysis.riskLevel;
     

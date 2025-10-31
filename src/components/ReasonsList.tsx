@@ -125,10 +125,19 @@ export function ReasonsList({
                     </span>
                   )}
                 </div>
-                <div className="flex items-center gap-2 flex-shrink-0">
-                  <span className="text-xs font-bold px-2 py-1 bg-white bg-opacity-60 rounded-md shadow-sm">
-                    +{signal.score}
+                <div className="flex items-center gap-1 flex-shrink-0">
+                  <span className="text-xs font-semibold px-2 py-1 bg-white bg-opacity-60 rounded-md shadow-sm whitespace-nowrap">
+                    {signal.severity === 'safe' ? '✅ Safe' : 
+                     signal.severity === 'low' ? '⚠️ Low' :
+                     signal.severity === 'medium' ? '⚠️ Medium' :
+                     signal.severity === 'high' ? '🚨 High' :
+                     '🔴 Critical'}
                   </span>
+                  {signal.impactPercentage !== undefined && (
+                    <span className="text-xs font-semibold px-2 py-1 bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-200 rounded-md shadow-sm whitespace-nowrap">
+                      {signal.impactPercentage.toFixed(1)}%
+                    </span>
+                  )}
                 </div>
               </div>
 

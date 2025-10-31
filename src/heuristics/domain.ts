@@ -104,34 +104,13 @@ export function checkMixedContent(): { hasMixedContent: boolean; signal?: RiskSi
 /**
  * Check domain age using WHOIS API
  */
-export async function checkDomainAge(domain: string, includeWhois: boolean = false): Promise<Partial<DomainAnalysis>> {
+export async function checkDomainAge(domain: string): Promise<Partial<DomainAnalysis>> {
   try {
     // Strip www. prefix for WHOIS lookup
     const cleanDomain = domain.replace(/^www\./i, '');
     
-    // Skip domain age check if WHOIS verification is disabled
-    // Mock data would skew AI analysis results, so we return empty signals
-    if (!includeWhois) {
-      console.log('🔧 WHOIS verification disabled, skipping domain age check for:', cleanDomain);
-      return {
-        domain,
-        ageInDays: null,
-        registrar: null,
-        isSuspicious: false,
-        signals: [], // No signals when WHOIS is disabled
-        creationDate: null,
-        expirationDate: null,
-        updatedDate: null,
-        dnssec: null,
-        nameServers: null,
-        registrantEmail: null,
-        status: null,
-        whoisServer: null,
-      };
-    }
-
-    // Call proxy backend server for real WHOIS data
-    console.log('🌐 Fetching WHOIS data via proxy for:', cleanDomain);
+    // Always get domain age and WHOIS data for trust factor calculation and scoring
+    console.log(`🌐 Fetching WHOIS data for: ${cleanDomain}`);
 
     const response = await fetch(
       `${getApiUrl('/api/whois')}/${cleanDomain}`,
@@ -229,6 +208,8 @@ export async function checkDomainAge(domain: string, includeWhois: boolean = fal
       status: whoisData.status?.length || 0,
       whoisServer: whoisData.whoisServer,
     });
+
+    console.log(`🧠 Domain age for trust calculation: ${ageInDays} days (${ageInYears} years) - will be used for dampening`);
 
     const signals: RiskSignal[] = [];
 
@@ -328,7 +309,7 @@ export async function checkDomainAge(domain: string, includeWhois: boolean = fal
       ageInDays: whoisData.ageInDays,
       registrar: whoisData.registrar,
       isSuspicious: whoisData.ageInDays < DOMAIN_AGE_THRESHOLD_DAYS,
-      signals,
+      signals: signals, // Always include signals for domain validation
       creationDate: whoisData.createdDate,
       expirationDate: whoisData.expirationDate,
       updatedDate: whoisData.updatedDate,
@@ -341,7 +322,7 @@ export async function checkDomainAge(domain: string, includeWhois: boolean = fal
   } catch (error) {
     console.error('❌ Error checking domain age:', error);
     
-    // Graceful fallback - don't penalize if we can't check
+    // Graceful fallback - don't penalize if we can't check, but still return null for ageInDays gracefully
     return {
       domain,
       ageInDays: null,
@@ -543,7 +524,7 @@ export function checkPaymentMethods(): PaymentAnalysis {
 /**
  * Run all domain and security checks
  */
-export async function runDomainSecurityChecks(includeWhois: boolean = false): Promise<{
+export async function runDomainSecurityChecks(): Promise<{
   security: SecurityAnalysis;
   domain: DomainAnalysis;
   payment: PaymentAnalysis;
@@ -563,35 +544,24 @@ export async function runDomainSecurityChecks(includeWhois: boolean = false): Pr
     }
   }
 
-  // 2. Domain checks (only if WHOIS verification is enabled)
+  // 2. Domain checks - always get domain age and WHOIS data for trust factor calculation and scoring
   let domainResult: DomainAnalysis;
-  if (includeWhois) {
-    console.log('🛡️ Domain Trust Check enabled - running WHOIS verification');
-    const domainAgeResult = await checkDomainAge(currentDomain, includeWhois);
-    const urlCheckResult = checkSuspiciousURL(currentDomain);
+  console.log(`🛡️ Running domain legitimacy checks...`);
+  
+  // Always get domain age - critical for dampening decisions
+  const domainAgeResult = await checkDomainAge(currentDomain);
+  const urlCheckResult = checkSuspiciousURL(currentDomain);
 
-    domainResult = {
-      domain: currentDomain,
-      ageInDays: domainAgeResult.ageInDays || null,
-      registrar: domainAgeResult.registrar || null,
-      isSuspicious: urlCheckResult.isSuspicious || (domainAgeResult.isSuspicious || false),
-      signals: [
-        ...(domainAgeResult.signals || []),
-        ...(urlCheckResult.signal ? [urlCheckResult.signal] : []),
-      ],
-    };
-  } else {
-    console.log('🚫 Domain Trust Check disabled - skipping WHOIS analysis');
-    // Return minimal domain analysis when disabled (only URL pattern checks)
-    const urlCheckResult = checkSuspiciousURL(currentDomain);
-    domainResult = {
-      domain: currentDomain,
-      ageInDays: null,
-      registrar: null,
-      isSuspicious: urlCheckResult.isSuspicious,
-      signals: urlCheckResult.signal ? [urlCheckResult.signal] : [],
-    };
-  }
+  domainResult = {
+    domain: currentDomain,
+    ageInDays: domainAgeResult.ageInDays || null,
+    registrar: domainAgeResult.registrar || null,
+    isSuspicious: urlCheckResult.isSuspicious || (domainAgeResult.isSuspicious || false),
+    signals: [
+      ...(domainAgeResult.signals || []),
+      ...(urlCheckResult.signal ? [urlCheckResult.signal] : []),
+    ],
+  };
 
   // 3. Payment method checks
   const paymentResult = checkPaymentMethods();
