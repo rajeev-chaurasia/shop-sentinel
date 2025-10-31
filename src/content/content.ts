@@ -7,9 +7,55 @@ import { crossTabSync } from '../services/crossTabSync';
 import { PolicyDetectionService } from '../services/policyDetection';
 import { enhanceDomainAnalysisWithAI } from '../services/aiDomainAnalyzer';
 import { seedImpersonationPatterns } from '../services/impersonationPatterns';
+import { progressCache } from '../services/progressCache';
+import type { PhaseResult } from '../types/messages';
 import { getApiUrl } from '../config/env';
 
 console.log('🛡️ Shop Sentinel content script loaded on:', window.location.href);
+
+/**
+ * Send progress update to popup for real-time UI feedback
+ */
+function sendProgressUpdate(
+  url: string,
+  phase: string,
+  subPhase: string,
+  status: 'started' | 'processing' | 'completed',
+  progress: number,
+  elapsedMs?: number,
+  findings?: { signalsFound: number; topFinding?: string }
+): void {
+  const phaseResult: PhaseResult = {
+    phase,
+    subPhase,
+    status,
+    progress,
+    elapsedMs,
+    timestamp: Date.now(),
+    findings,
+  };
+
+  // Save to cache for history
+  progressCache.savePhaseResult(url, phaseResult);
+
+  // Send to popup for real-time UI update
+  chrome.runtime.sendMessage({
+    action: 'ANALYSIS_PROGRESS',
+    payload: {
+      url,
+      phase,
+      subPhase,
+      status,
+      progress,
+      elapsedMs,
+      findings,
+    },
+  }).catch(err => {
+    if (!err.message?.includes('Receiving end does not exist')) {
+      console.warn('⚠️ Failed to send progress update:', err);
+    }
+  });
+}
 
 async function handlePing() {
   return { status: 'ready', url: window.location.href };
@@ -498,11 +544,14 @@ async function handleAnalyzePage(payload: any) {
       console.log(`📍 PHASE 2: AI INITIALIZATION`);
       console.log(`⏱️  [${"═".repeat(35)}]`);
       
+      sendProgressUpdate(window.location.href, 'ai_init', 'Initializing', 'started', 30);
+      
       const phase2Start = performance.now();
       const aiStartTime = performance.now();
 
       try {
         // Initialize session first (will reuse if already exists)
+        sendProgressUpdate(window.location.href, 'ai_init', 'Downloading AI model...', 'processing', 32);
         const initialized = await AIService.initializeSession();
         
         const phase2Duration = performance.now() - phase2Start;
@@ -510,8 +559,10 @@ async function handleAnalyzePage(payload: any) {
         if (!initialized) {
           console.warn(`⚠️ PHASE 2 FAILED: AI session initialization failed`);
           aiAnalysisTime = performance.now() - aiStartTime;
+          sendProgressUpdate(window.location.href, 'ai_init', 'Failed', 'completed', 35, phase2Duration);
         } else {
           console.log(`✅ PHASE 2 COMPLETE in ${phase2Duration.toFixed(0)}ms (Gemini Nano ready)\n`);
+          sendProgressUpdate(window.location.href, 'ai_init', 'Ready', 'completed', 35, phase2Duration);
           
           console.log(`⏱️  [${"═".repeat(35)}]`);
           console.log(`📍 PHASE 3: SEQUENTIAL AI ANALYSIS (domain → dark patterns → legitimacy)`);
@@ -521,8 +572,10 @@ async function handleAnalyzePage(payload: any) {
           // PHASE 3a: DOMAIN AI ENHANCEMENT (FIRST - before other AI tasks)
           // ========================================================================
           console.log(`\n   [3a] Domain AI Enhancement (semantic impersonation)`);
+          sendProgressUpdate(window.location.href, 'ai_domain', 'Initializing', 'started', 40);
           const phase3aStart = performance.now();
           try {
+            sendProgressUpdate(window.location.href, 'ai_domain', 'Analyzing for brand impersonation...', 'processing', 42);
             const domainSignal = await enhanceDomainAnalysisWithAI(window.location.hostname, {
               domain,
               contact,
@@ -533,12 +586,31 @@ async function handleAnalyzePage(payload: any) {
             
             if (domainSignal) {
               console.log(`   ✅ [3a] COMPLETE in ${phase3aDuration.toFixed(0)}ms (1 signal)`);
+              sendProgressUpdate(
+                window.location.href,
+                'ai_domain',
+                'Brand impersonation detected',
+                'completed',
+                50,
+                phase3aDuration,
+                { signalsFound: 1, topFinding: domainSignal.reason }
+              );
               aiSignals.push(domainSignal);
             } else {
               console.log(`   ✅ [3a] COMPLETE in ${phase3aDuration.toFixed(0)}ms (0 signals)`);
+              sendProgressUpdate(
+                window.location.href,
+                'ai_domain',
+                'No impersonation detected',
+                'completed',
+                50,
+                phase3aDuration,
+                { signalsFound: 0, topFinding: 'Domain appears legitimate' }
+              );
             }
           } catch (domainAIError) {
             console.warn(`   ⚠️ [3a] ERROR:`, domainAIError);
+            sendProgressUpdate(window.location.href, 'ai_domain', 'Error', 'completed', 50);
             // Continue to next AI task
           }
           
@@ -546,6 +618,7 @@ async function handleAnalyzePage(payload: any) {
           // PHASE 3b: DARK PATTERNS ANALYSIS (SECOND - after domain)
           // ========================================================================
           console.log(`\n   [3b] Dark Patterns Analysis`);
+          sendProgressUpdate(window.location.href, 'ai_darkpattern', 'Initializing', 'started', 55);
           const phase3bStart = performance.now();
           
           // Extract page content for AI analysis
@@ -569,12 +642,25 @@ async function handleAnalyzePage(payload: any) {
           };
           
           try {
+            sendProgressUpdate(window.location.href, 'ai_darkpattern', 'Scanning for deceptive practices...', 'processing', 60);
             const darkPatternSignals = await AIService.analyzeDarkPatterns(pageContent);
             const phase3bDuration = performance.now() - phase3bStart;
             console.log(`   ✅ [3b] COMPLETE in ${phase3bDuration.toFixed(0)}ms (${darkPatternSignals.length} signals)`);
+            
+            sendProgressUpdate(
+              window.location.href,
+              'ai_darkpattern',
+              `Found ${darkPatternSignals.length} dark patterns`,
+              'completed',
+              70,
+              phase3bDuration,
+              { signalsFound: darkPatternSignals.length, topFinding: darkPatternSignals[0]?.reason }
+            );
+            
             aiSignals.push(...darkPatternSignals);
           } catch (darkPatternsError) {
             console.warn(`   ⚠️ [3b] ERROR:`, darkPatternsError);
+            sendProgressUpdate(window.location.href, 'ai_darkpattern', 'Error', 'completed', 70);
             // Continue to next AI task
           }
           
@@ -582,10 +668,12 @@ async function handleAnalyzePage(payload: any) {
           // PHASE 3c: LEGITIMACY ANALYSIS (THIRD - after dark patterns)
           // ========================================================================
           console.log(`\n   [3c] Legitimacy Analysis`);
+          sendProgressUpdate(window.location.href, 'ai_legitimacy', 'Checking', 'started', 75);
           const phase3cStart = performance.now();
           
           // Only run legitimacy on certain page types
           if (pageType === 'product' || pageType === 'checkout' || pageType === 'home') {
+            sendProgressUpdate(window.location.href, 'ai_legitimacy', 'Analyzing brand presence...', 'processing', 80);
             const pageText = document.body.innerText || '';
             
             // Extract social media data from profiles
@@ -624,12 +712,32 @@ async function handleAnalyzePage(payload: any) {
               });
               const phase3cDuration = performance.now() - phase3cStart;
               console.log(`   ✅ [3c] COMPLETE in ${phase3cDuration.toFixed(0)}ms (${legitimacySignals.length} signals)`);
+              
+              sendProgressUpdate(
+                window.location.href,
+                'ai_legitimacy',
+                'Completed',
+                'completed',
+                85,
+                phase3cDuration,
+                { signalsFound: legitimacySignals.length }
+              );
+              
               aiSignals.push(...legitimacySignals);
             } catch (legitimacyError) {
               console.warn(`   ⚠️ [3c] ERROR:`, legitimacyError);
+              sendProgressUpdate(window.location.href, 'ai_legitimacy', 'Error', 'completed', 85);
             }
           } else {
             console.log(`   ⏭️  [3c] SKIPPED (not applicable for ${pageType} pages)`);
+            sendProgressUpdate(
+              window.location.href,
+              'ai_legitimacy',
+              'Skipped for this page type',
+              'completed',
+              85,
+              0
+            );
           }
           
           aiAnalysisTime = performance.now() - aiStartTime;
@@ -643,6 +751,8 @@ async function handleAnalyzePage(payload: any) {
           console.log(`📍 PHASE 4: SIGNAL CONSOLIDATION & SCORE CALCULATION`);
           console.log(`⏱️  [${"═".repeat(35)}]`);
           
+          sendProgressUpdate(window.location.href, 'consolidation', 'Consolidating signals...', 'started', 90);
+          
           const phase4Start = performance.now();
           
           const allSignalsWithAI = [...heuristicSignals, ...aiSignals];
@@ -651,6 +761,7 @@ async function handleAnalyzePage(payload: any) {
           console.log(`   - AI signals (Phase 3): ${aiSignals.length}`);
           console.log(`   - Total signals: ${allSignalsWithAI.length}`);
           
+          sendProgressUpdate(window.location.href, 'consolidation', 'Calculating final score...', 'processing', 95);
           const aiRiskAnalysis = RiskCalculator.calculateScore(allSignalsWithAI, domain?.ageInDays || null, contact);
           
           const phase4Duration = performance.now() - phase4Start;
@@ -658,6 +769,25 @@ async function handleAnalyzePage(payload: any) {
           console.log(`   Final risk score: ${aiRiskAnalysis.totalScore}/100`);
           console.log(`   Risk level: ${aiRiskAnalysis.riskLevel}`);
           console.log(`   Top concerns: ${aiRiskAnalysis.topConcerns?.slice(0,2).map(c => c.reason).join(', ') || 'None'}\n`);
+          
+          sendProgressUpdate(
+            window.location.href,
+            'consolidation',
+            'Complete',
+            'completed',
+            100,
+            phase4Duration,
+            { signalsFound: allSignalsWithAI.length, topFinding: `Risk: ${aiRiskAnalysis.riskLevel} (${aiRiskAnalysis.totalScore}/100)` }
+          );
+          
+          // Save final analysis to history
+          const allPhases = progressCache.getPhaseResults(window.location.href) || [];
+          progressCache.saveToHistory(
+            window.location.href,
+            allPhases,
+            aiRiskAnalysis.totalScore,
+            aiRiskAnalysis.riskLevel
+          );
           
           // Update backend job: AI analysis complete (65% progress)
           await updateBackendJobProgress(65, 'ai_analysis', {

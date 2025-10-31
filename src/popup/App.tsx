@@ -4,7 +4,9 @@ import { MessagingService } from '../services/messaging';
 import { StorageService } from '../services/storage';
 import { cacheService } from '../services/cache';
 import { crossTabSync } from '../services/crossTabSync';
+import { progressCache } from '../services/progressCache';
 import type { AnalysisResult } from '../types';
+import type { PhaseResult, AnalysisHistoryItem } from '../types/messages';
 import { RiskMeter, ReasonsList, PolicySummary, AnalysisProgress } from '../components';
 import { createErrorFromMessage } from '../types/errors';
 import { TIMINGS } from '../config/constants';
@@ -30,6 +32,12 @@ function App() {
   
   const [operationLock, setOperationLock] = useState(false);
   const [isCheckingCache, setIsCheckingCache] = useState(false);
+  
+  // Progress tracking state
+  const [_analysisPhases, setAnalysisPhases] = useState<PhaseResult[]>([]); // Track all phases for history
+  const [currentPhase, setCurrentPhase] = useState<PhaseResult | null>(null);
+  const [progressPercentage, setProgressPercentage] = useState(0);
+  const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistoryItem[]>([]);
   
   const {
     currentUrl,
@@ -59,6 +67,7 @@ function App() {
   const withOperationLock = async <T,>(operation: () => Promise<T>): Promise<T | null> => {
     if (operationLock) {
       console.log('⏸️ Operation in progress, skipping');
+
       return null;
     }
     
@@ -330,13 +339,69 @@ function App() {
     };
   }, [isLoading, isUpdating]);
 
-  // Auto-complete analysis when results arrive
+  // Monitor active tab URL changes and detect domain switches (even after popup close/reopen)
   useEffect(() => {
-    if (analysisResult && isLoading) {
-      console.log('✅ Analysis result detected while loading, completing analysis...');
-      completeAnalysis();
-    }
-  }, [analysisResult, isLoading, completeAnalysis]);
+    let isMounted = true;
+    
+    // Listen for progress updates from content script
+    const handleMessage = (message: any) => {
+      if (!isMounted || message.action !== 'ANALYSIS_PROGRESS') return;
+      
+      const payload = message.payload;
+      console.log(`📊 [Progress] ${payload.phase} (${payload.progress}%): ${payload.subPhase}`);
+      
+      // Update current phase
+      setCurrentPhase({
+        phase: payload.phase,
+        subPhase: payload.subPhase,
+        status: payload.status,
+        progress: payload.progress,
+        elapsedMs: payload.elapsedMs,
+        timestamp: Date.now(),
+        findings: payload.findings,
+      });
+      
+      // Update progress percentage
+      setProgressPercentage(payload.progress);
+      
+      // Add phase to history
+      setAnalysisPhases(prev => {
+        const updated = prev.map(p => p.phase === payload.phase ? { ...p, ...payload } : p);
+        if (!updated.some(p => p.phase === payload.phase)) {
+          updated.push({
+            phase: payload.phase,
+            subPhase: payload.subPhase,
+            status: payload.status,
+            progress: payload.progress,
+            elapsedMs: payload.elapsedMs,
+            timestamp: Date.now(),
+            findings: payload.findings,
+          });
+        }
+        return updated;
+      });
+    };
+    
+    // Add runtime message listener
+    chrome.runtime.onMessage.addListener(handleMessage);
+    
+    // Load analysis history on mount
+    const loadHistory = () => {
+      try {
+        const history = progressCache.getHistory();
+        setAnalysisHistory(history);
+      } catch (error) {
+        console.warn('Failed to load history:', error);
+      }
+    };
+    
+    loadHistory();
+    
+    return () => {
+      isMounted = false;
+      chrome.runtime.onMessage.removeListener(handleMessage);
+    };
+  }, []);
 
   // Monitor active tab URL changes and detect domain switches (even after popup close/reopen)
   useEffect(() => {
@@ -1231,8 +1296,61 @@ function App() {
                   <span className="inline-block w-2 h-2 bg-indigo-500 rounded-full animate-bounce" style={{ animationDelay: '0.2s' }}></span>
                 </div>
                 
+                {/* Real-time progress tracking */}
+                {(currentPhase || progressPercentage > 0) && (
+                  <div className="mt-6 px-4 w-full max-w-sm space-y-4">
+                    {/* Progress bar */}
+                    <div>
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xs font-semibold text-gray-700 dark:text-gray-300">
+                          {currentPhase?.phase === 'heuristic' && '🔍 Heuristic Analysis'}
+                          {currentPhase?.phase === 'ai_init' && '⚙️ AI Initialization'}
+                          {currentPhase?.phase === 'ai_domain' && '🔗 Domain Analysis'}
+                          {currentPhase?.phase === 'ai_darkpattern' && '🎭 Dark Pattern Detection'}
+                          {currentPhase?.phase === 'ai_legitimacy' && '✓ Legitimacy Check'}
+                          {currentPhase?.phase === 'consolidation' && '📊 Consolidating Results'}
+                        </span>
+                        <span className="text-xs font-bold text-gray-600 dark:text-gray-400">{progressPercentage}%</span>
+                      </div>
+                      <div className="w-full h-1.5 bg-gray-200 dark:bg-gray-700 rounded-full overflow-hidden">
+                        <div
+                          className="h-full transition-all duration-300"
+                          style={{
+                            width: `${progressPercentage}%`,
+                            backgroundColor:
+                              currentPhase?.phase === 'heuristic' ? '#3b82f6' :
+                              currentPhase?.phase === 'ai_init' ? '#8b5cf6' :
+                              currentPhase?.phase === 'ai_domain' ? '#ec4899' :
+                              currentPhase?.phase === 'ai_darkpattern' ? '#f97316' :
+                              currentPhase?.phase === 'ai_legitimacy' ? '#10b981' :
+                              currentPhase?.phase === 'consolidation' ? '#06b6d4' :
+                              '#3b82f6',
+                          }}
+                        ></div>
+                      </div>
+                    </div>
+                    
+                    {/* Current phase status */}
+                    {currentPhase && (
+                      <div className="text-xs text-gray-600 dark:text-gray-400 space-y-1">
+                        <div className="flex items-center gap-2">
+                          <span>{currentPhase.status === 'completed' ? '✅' : currentPhase.status === 'processing' ? '🔄' : '⏳'}</span>
+                          <span>{currentPhase.subPhase}</span>
+                          {currentPhase.elapsedMs !== undefined && <span className="text-gray-500">({(currentPhase.elapsedMs / 1000).toFixed(1)}s)</span>}
+                        </div>
+                        {currentPhase.findings && currentPhase.findings.signalsFound > 0 && (
+                          <div className="flex items-center gap-2 text-blue-600 dark:text-blue-400">
+                            <span>+{currentPhase.findings.signalsFound} signals</span>
+                            {currentPhase.findings.topFinding && <span className="text-gray-600 dark:text-gray-400">({currentPhase.findings.topFinding.substring(0, 30)}...)</span>}
+                          </div>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+                
                 {/* Backend job progress if available */}
-                {backendJobProgress > 0 && (
+                {backendJobProgress > 0 && !progressPercentage && (
                   <div className="mt-6 px-4 w-full max-w-sm">
                     <AnalysisProgress
                       progress={backendJobProgress}
@@ -1511,11 +1629,34 @@ function App() {
                 )}
               </div>
               {currentUrl && (
-                <div className="px-4 py-3 bg-gray-50 dark:bg-slate-700 border-t border-gray-200 dark:border-slate-600">
+                <div className="px-4 py-3 bg-gray-50 dark:bg-slate-700 border-t border-gray-200 dark:border-slate-600 space-y-2">
                   <div className="flex items-center gap-2">
                     <span className="text-xs font-semibold text-gray-500 dark:text-gray-400">🌐</span>
                     <span className="text-xs text-gray-600 dark:text-gray-400 truncate flex-1">{new URL(currentUrl).hostname}</span>
                   </div>
+                  
+                  {/* Analysis History */}
+                  {analysisHistory.length > 1 && (
+                    <div className="mt-2 pt-2 border-t border-gray-200 dark:border-gray-600">
+                      <div className="text-xs font-semibold text-gray-600 dark:text-gray-300 mb-1">📜 Recent Analyses</div>
+                      <div className="space-y-1">
+                        {analysisHistory.slice(0, 3).map((item, idx) => (
+                          <div key={idx} className="text-xs text-gray-600 dark:text-gray-400 flex items-center gap-2 p-1 rounded hover:bg-white hover:dark:bg-slate-600 transition-colors cursor-pointer">
+                            <span className={
+                              item.riskLevel === 'high' ? '🔴' :
+                              item.riskLevel === 'medium' ? '🟡' :
+                              item.riskLevel === 'low' ? '🟢' :
+                              '⚪'
+                            }></span>
+                            <span>{item.finalScore}/100</span>
+                            <span className="text-gray-500 dark:text-gray-500">
+                              {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               )}
             </div>

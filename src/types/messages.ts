@@ -15,7 +15,9 @@ export type MessageAction =
   | 'GET_JOB_STATUS'
   | 'GET_JOBS_LIST'
   | 'CREATE_WEBHOOK'
-  | 'GET_BACKEND_SESSION';
+  | 'GET_BACKEND_SESSION'
+  | 'ANALYSIS_PROGRESS'
+  | 'GET_ANALYSIS_HISTORY';
 
 export interface BaseMessage {
   action: MessageAction;
@@ -89,6 +91,40 @@ export interface CreateWebhookPayload {
   url: string;
   events: string[];
   secret?: string;
+}
+
+export interface AnalysisProgressPayload {
+  url: string;
+  phase: 'heuristic' | 'ai_init' | 'ai_domain' | 'ai_darkpattern' | 'ai_legitimacy' | 'consolidation';
+  subPhase: string;
+  status: 'started' | 'processing' | 'completed';
+  progress: number; // 0-100
+  elapsedMs?: number;
+  findings?: {
+    signalsFound: number;
+    topFinding?: string;
+  };
+}
+
+export interface PhaseResult {
+  phase: string;
+  subPhase: string;
+  status: 'started' | 'processing' | 'completed';
+  progress: number;
+  elapsedMs?: number;
+  timestamp: number;
+  findings?: {
+    signalsFound: number;
+    topFinding?: string;
+  };
+}
+
+export interface AnalysisHistoryItem {
+  url: string;
+  timestamp: number;
+  phases: PhaseResult[];
+  finalScore?: number;
+  riskLevel?: string;
 }
 
 export function createMessage<T = any>(
