@@ -188,7 +188,7 @@ export function checkPolicyPages(): PolicyAnalysis {
     ],
     shipping: [
       'shipping policy', 'delivery policy', 'shipping info', 'delivery information',
-      'shipping & delivery', 'shipping rates', 'shipping costs',
+      'shipping & delivery', 'shipping rates', 'shipping costs', 'delivery',
       '/shipping', '/delivery', '/shipping-policy', '/shippingpolicy'
     ],
     refund: [
