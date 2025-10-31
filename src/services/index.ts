@@ -9,3 +9,4 @@ export { crossTabSync } from './crossTabSync';
 export { cleanupStorageOnStartup } from './cleanup';
 export { PolicyDetectionService } from './policyDetection';
 export { hybridStorage } from './hybridStorage';
+export { progressCache, ProgressCacheService } from './progressCache';
