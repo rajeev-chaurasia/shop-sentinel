@@ -1165,11 +1165,11 @@ function App() {
                   )}
                   {/* Removed manual refresh; smart button handles cache vs analyze */}
                 </div>
-                <div className="flex gap-1 bg-gray-100 dark:bg-slate-200 rounded-xl p-1.5 shadow-inner">
-                  <button onClick={() => setActiveTab('overview')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 ${activeTab === 'overview' ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-md transform scale-105' : 'text-gray-600 dark:text-slate-300 hover:text-gray-900 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-600 hover:bg-opacity-50'}`}>
+                <div className="flex gap-1 bg-gray-100 dark:bg-slate-700 rounded-xl p-1.5 shadow-inner">
+                  <button onClick={() => setActiveTab('overview')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 ${activeTab === 'overview' ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-md transform scale-105' : 'text-gray-600 dark:text-slate-200 hover:text-gray-900 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-600 hover:bg-opacity-50'}`}>
                     Overview
                   </button>
-                  <button onClick={() => setActiveTab('reasons')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 relative ${activeTab === 'reasons' ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-md transform scale-105' : 'text-gray-600 dark:text-slate-300 hover:text-gray-900 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-600 hover:bg-opacity-50'}`}>
+                  <button onClick={() => setActiveTab('reasons')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 relative ${activeTab === 'reasons' ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-md transform scale-105' : 'text-gray-600 dark:text-slate-200 hover:text-gray-900 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-600 hover:bg-opacity-50'}`}>
                     Issues
                     {(currentResult!.allSignals?.length ?? 0) > 0 && (
                       <span className={`ml-1.5 px-1.5 py-0.5 rounded-full text-xs font-bold ${activeTab === 'reasons' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300' : 'bg-gray-200 dark:bg-slate-600 text-gray-700 dark:text-slate-300'}`}>
@@ -1177,7 +1177,7 @@ function App() {
                       </span>
                     )}
                   </button>
-                  <button onClick={() => setActiveTab('policies')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 ${activeTab === 'policies' ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-md transform scale-105' : 'text-gray-600 dark:text-slate-300 hover:text-gray-900 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-600 hover:bg-opacity-50'}`}>
+                  <button onClick={() => setActiveTab('policies')} className={`flex-1 py-2.5 px-3 rounded-lg text-sm font-semibold transition-all duration-200 ${activeTab === 'policies' ? 'bg-white dark:bg-slate-600 text-blue-600 dark:text-blue-400 shadow-md transform scale-105' : 'text-gray-600 dark:text-slate-200 hover:text-gray-900 dark:hover:text-slate-100 hover:bg-white dark:hover:bg-slate-600 hover:bg-opacity-50'}`}>
                     Policies
                   </button>
                 </div>
