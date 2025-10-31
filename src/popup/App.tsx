@@ -21,8 +21,6 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   
   const [isPolicyPage, setIsPolicyPage] = useState(false);
-  // @ts-ignore - policyType is set but not displayed to user (kept for debugging/future use)
-  const [policyType, setPolicyType] = useState<string>('');
   const [policyAnalysis, setPolicyAnalysis] = useState<any>(null);
   const [isAnalyzingPolicy, setIsAnalyzingPolicy] = useState(false);
   const [policyLegitimacy, setPolicyLegitimacy] = useState<any>(null);
@@ -33,8 +31,6 @@ function App() {
   const [operationLock, setOperationLock] = useState(false);
   const [isCheckingCache, setIsCheckingCache] = useState(false);
   
-  // Progress tracking state
-  const [_analysisPhases, setAnalysisPhases] = useState<PhaseResult[]>([]); // Track all phases for history
   const [currentPhase, setCurrentPhase] = useState<PhaseResult | null>(null);
   const [progressPercentage, setProgressPercentage] = useState(0);
   const [analysisHistory, setAnalysisHistory] = useState<AnalysisHistoryItem[]>([]);
@@ -66,8 +62,6 @@ function App() {
   // Helper to prevent concurrent operations
   const withOperationLock = async <T,>(operation: () => Promise<T>): Promise<T | null> => {
     if (operationLock) {
-      console.log('⏸️ Operation in progress, skipping');
-
       return null;
     }
     
@@ -96,11 +90,9 @@ function App() {
       const riskLevel = result.riskLevel || 'safe';
       const badgeText = result.totalRiskScore > 0 ? result.totalRiskScore.toString() : '';
       
-      // Send UPDATE_ICON message to the active tab's content script
       await MessagingService.sendToActiveTab('UPDATE_ICON', { riskLevel, badgeText });
-      console.log(`✅ Icon update sent to content script: ${riskLevel} (${badgeText})`);
     } catch (error) {
-      console.error('❌ Failed to update icon for cached result:', error);
+      console.error('Failed to update icon for cached result:', error);
     }
   };
 
@@ -110,23 +102,14 @@ function App() {
       const pageInfo = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
       if (pageInfo?.data?.isPolicyPage) {
         setIsPolicyPage(true);
-        setPolicyType(pageInfo.data.policyType || 'policy');
         setPolicyLegitimacy(pageInfo.data.policyLegitimacy || null);
-        console.log(`📄 Policy page detected: ${pageInfo.data.policyType} (confidence: ${pageInfo.data.policyConfidence}%)`);
-        
-        // Log legitimacy warnings if any
-        if (pageInfo.data.policyLegitimacy && !pageInfo.data.policyLegitimacy.isLegitimate) {
-          console.warn('⚠️ Policy legitimacy concerns:', pageInfo.data.policyLegitimacy);
-        }
       } else {
         setIsPolicyPage(false);
-        setPolicyType('');
         setPolicyLegitimacy(null);
       }
     } catch (error) {
-      console.error('❌ Failed to check policy page:', error);
+      console.error('Failed to check policy page:', error);
       setIsPolicyPage(false);
-      setPolicyType('');
       setPolicyLegitimacy(null);
     }
   };
@@ -139,18 +122,14 @@ function App() {
     setPolicyAnalysis(null);
 
     try {
-      console.log('🤖 Starting policy analysis...');
       const result = await MessagingService.sendToActiveTab('ANALYZE_POLICY');
       
       if (result?.data?.status === 'success') {
         setPolicyAnalysis(result.data);
-        console.log('✅ Policy analysis completed successfully');
       } else {
-        console.error('❌ Policy analysis failed:', result?.data?.message);
         setError(createErrorFromMessage(result?.data?.message || 'Policy analysis failed'));
       }
     } catch (error) {
-      console.error('❌ Policy analysis error:', error);
       setError(createErrorFromMessage(error instanceof Error ? error.message : 'Policy analysis failed'));
     } finally {
       setIsAnalyzingPolicy(false);
@@ -178,8 +157,6 @@ function App() {
         });
 
         if (response?.success && response?.jobId) {
-          console.log('📊 Restoring active job on popup open:', response);
-          // Update store with the active job progress
           updateBackendJobProgress(
             response.progress,
             'processing',
@@ -188,15 +165,14 @@ function App() {
           );
         }
       } catch (error) {
-        console.warn('⚠️ Failed to restore active job:', error);
+        console.warn('Failed to restore active job:', error);
       }
     };
 
-    // Only restore if we don't already have a job ID
     if (!backendJobProgress || backendJobProgress === 0) {
       restoreActiveJob();
     }
-  }, []); // Only run on mount
+  }, []);
 
   // Poll for results when in loading state (non-blocking, no isUpdating guard)
   useEffect(() => {
@@ -215,12 +191,9 @@ function App() {
           const pageType = pageInfoResponse.data.pageType || 'other';
           const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
           if (cached && isValidAnalysisResult(cached)) {
-            console.log(`✅ Analysis completed! Loading result (${pageType})...`);
             setAnalysisResult(cached);
-            // Update icon badge for cached results
             updateIconForCachedResult(cached);
             completeAnalysis();
-            // Check if current page is a policy page after analysis completes
             checkPolicyPage();
             clearInterval(interval);
             setPollInterval(null);
@@ -287,35 +260,23 @@ function App() {
           if (relevantKey) {
             const change = changes[relevantKey];
             if (change && change.newValue) {
-              console.log('📡 Analysis updated via storage change:', relevantKey);
               const cached = change.newValue as any;
               
-              // Handle new format: { result, expiresAt }
               if (cached.result && cached.expiresAt && Date.now() < cached.expiresAt) {
                 if (isValidAnalysisResult(cached.result)) {
-                  console.log('✅ New analysis result received, completing analysis...');
                   setAnalysisResult(cached.result);
                   setIsFromCache(true);
-                  // Update icon badge for cached results
                   updateIconForCachedResult(cached.result);
-                  // Show notification for risky cached results
                   showRiskNotification(cached.result);
-                  // CRITICAL: Always complete analysis when result arrives
                   completeAnalysis();
-                  // Check if current page is a policy page after analysis completes
                   checkPolicyPage();
                 }
               }
-              // Legacy support: direct result object (shouldn't happen with new storage format)
               else if (isValidAnalysisResult(cached)) {
-                console.log('✅ New analysis result received, completing analysis...');
                 setAnalysisResult(cached);
                 setIsFromCache(true);
-                // Update icon badge for cached results
                 updateIconForCachedResult(cached);
-                // CRITICAL: Always complete analysis when result arrives
                 completeAnalysis();
-                // Check if current page is a policy page after analysis completes
                 checkPolicyPage();
               }
             }
@@ -325,7 +286,7 @@ function App() {
         } finally {
           setIsUpdating(false);
         }
-      }, 300); // 300ms debounce to batch rapid changes
+      }, 300);
     };
     
     chrome.storage.onChanged.addListener(handleStorageChange);
@@ -348,9 +309,7 @@ function App() {
       if (!isMounted || message.action !== 'ANALYSIS_PROGRESS') return;
       
       const payload = message.payload;
-      console.log(`📊 [Progress] ${payload.phase} (${payload.progress}%): ${payload.subPhase}`);
       
-      // Update current phase
       setCurrentPhase({
         phase: payload.phase,
         subPhase: payload.subPhase,
@@ -361,25 +320,7 @@ function App() {
         findings: payload.findings,
       });
       
-      // Update progress percentage
       setProgressPercentage(payload.progress);
-      
-      // Add phase to history
-      setAnalysisPhases(prev => {
-        const updated = prev.map(p => p.phase === payload.phase ? { ...p, ...payload } : p);
-        if (!updated.some(p => p.phase === payload.phase)) {
-          updated.push({
-            phase: payload.phase,
-            subPhase: payload.subPhase,
-            status: payload.status,
-            progress: payload.progress,
-            elapsedMs: payload.elapsedMs,
-            timestamp: Date.now(),
-            findings: payload.findings,
-          });
-        }
-        return updated;
-      });
     };
     
     // Add runtime message listener
@@ -422,20 +363,14 @@ function App() {
         const newDomain = new URL(tab.url).hostname;
         const previousDomain = previousUrl ? new URL(previousUrl).hostname : null;
         
-        // Check if domain has changed
         if (previousDomain && newDomain !== previousDomain) {
-          console.log(`🔄 Domain changed from ${previousDomain} to ${newDomain}`);
-          
-          // Clear cached analysis for old domain
           setAnalysisResult(null);
           setPartialResult(null);
           setIsFromCache(false);
           
-          // Load fresh cache for new domain
           await loadCachedAnalysisFull();
         }
         
-        // Always persist current URL to storage for next check
         await chrome.storage.local.set({ [POPUP_LAST_TAB_KEY]: tab.url });
       } catch (error) {
         // Silently ignore errors in monitoring
@@ -467,13 +402,7 @@ function App() {
 
   // Notification system for risky sites
   const showRiskNotification = async (result: AnalysisResult) => {
-    // Only notify if enabled and risk score is high enough
     if (!notifications || result.totalRiskScore < 30) {
-      console.log('🔔 Notification skipped:', {
-        enabled: notifications,
-        riskScore: result.totalRiskScore,
-        threshold: 50
-      });
       return;
     }
 
@@ -481,8 +410,6 @@ function App() {
       const riskLevel = result.riskLevel;
       const title = riskLevel === 'high' ? '🚨 High Risk Site Detected!' : '⚠️ Risky Site Warning';
       const message = `This site has a risk score of ${result.totalRiskScore}. Check the analysis for details.`;
-
-      console.log('🔔 Showing notification:', { title, riskScore: result.totalRiskScore });
 
       await chrome.notifications.create({
         type: 'basic',
@@ -586,19 +513,13 @@ function App() {
           await checkPolicyPage();
         }
       } else if (message.action === 'POLICY_PAGE_DETECTED' && message.payload) {
-        // Handle policy page detection from content script (URL changes)
-        console.log('📄 Policy page detection message received:', message.payload);
-        const { isPolicyPage: isPolicy, policyType: type, url } = message.payload;
+        const { isPolicyPage: isPolicy, url } = message.payload;
         
-        // Verify this is for the current tab
         const tab = await MessagingService.getActiveTab();
         if (tab?.url === url) {
           setIsPolicyPage(isPolicy);
-          setPolicyType(type || '');
-          // Reset policy analysis when navigating to a new policy page
           if (isPolicy) {
             setPolicyAnalysis(null);
-            console.log(`📄 Policy page detected via URL change: ${type}`);
           }
         }
       }

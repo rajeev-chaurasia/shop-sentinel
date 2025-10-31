@@ -11,8 +11,6 @@ import { progressCache } from '../services/progressCache';
 import type { PhaseResult } from '../types/messages';
 import { getApiUrl } from '../config/env';
 
-console.log('🛡️ Shop Sentinel content script loaded on:', window.location.href);
-
 /**
  * Send progress update to popup for real-time UI feedback
  */
@@ -35,10 +33,8 @@ function sendProgressUpdate(
     findings,
   };
 
-  // Save to cache for history
   progressCache.savePhaseResult(url, phaseResult);
 
-  // Send to popup for real-time UI update
   chrome.runtime.sendMessage({
     action: 'ANALYSIS_PROGRESS',
     payload: {
@@ -52,7 +48,7 @@ function sendProgressUpdate(
     },
   }).catch(err => {
     if (!err.message?.includes('Receiving end does not exist')) {
-      console.warn('⚠️ Failed to send progress update:', err);
+      console.warn('Failed to send progress update:', err);
     }
   });
 }
@@ -80,19 +76,12 @@ async function handleGetPageInfo() {
   };
 }
 
-/**
- * Page type detection result with confidence score
- */
 interface PageTypeResult {
   type: 'home' | 'product' | 'category' | 'checkout' | 'cart' | 'policy' | 'other';
   confidence: number;
   signals: string[];
 }
 
-/**
- * Detect page type using multiple signals (URL, DOM, Schema.org)
- * Returns type with confidence score for better decision making
- */
 function detectPageType(): PageTypeResult {
   const path = window.location.pathname.toLowerCase();
   const search = window.location.search.toLowerCase();
@@ -143,18 +132,13 @@ function detectPageType(): PageTypeResult {
     signals.push('proceed-to-checkout');
   }
   
-  // === CATEGORY/LISTING PAGE DETECTION (CHECK FIRST - highest priority after checkout/cart) ===
   const productCards = document.querySelectorAll(
     '.product-card, .product-item, [class*="product-grid"] > *, [data-product-id], [class*="product-base"], ' +
-    // Amazon-specific
     '[data-asin], .s-result-item, .sg-col-inner, .a-section.a-spacing-base, ' +
-    // eBay-specific
     '.s-item, [class*="srp-item"], ' +
-    // Generic
     'article[class*="product"], li[class*="product"], div[data-sku]'
   ).length;
   
-  // Strong signal: Many product cards = definitely category
   if (productCards > 8) {
     scores.category += 60;
     signals.push(`${productCards}-product-cards`);
@@ -166,34 +150,29 @@ function detectPageType(): PageTypeResult {
     signals.push(`${productCards}-product-cards`);
   }
   
-  // URL patterns for category pages
   if (path.includes('/category') || path.includes('/collection') || 
       path.includes('/shop') || path.includes('/search') ||
-      path.includes('/b/') || path.includes('/b?') || // Amazon browse nodes
-      path.includes('/s?') || path.includes('/s/') || // Amazon search
-      path.includes('/sch/') || // eBay search
-      /\/(men|women|kids|boys|girls|unisex)[-\/]/.test(path)) { // Gender-specific paths
+      path.includes('/b/') || path.includes('/b?') ||
+      path.includes('/s?') || path.includes('/s/') ||
+      path.includes('/sch/') ||
+      /\/(men|women|kids|boys|girls|unisex)[-\/]/.test(path)) {
     scores.category += 35;
     signals.push('category-url');
   }
   
-  // Query parameters that indicate category/listing pages
-  if (search.includes('node=') || // Amazon category node
+  if (search.includes('node=') ||
       search.includes('category=') || 
       search.includes('search') ||
-      search.includes('q=') || // Search query
-      search.includes('s=') || // Sort parameter
-      search.includes('_nkw=')) { // eBay search
+      search.includes('q=') ||
+      search.includes('s=') ||
+      search.includes('_nkw=')) {
     scores.category += 30;
     signals.push('category-query-params');
   }
   
-  // Filter/sort controls are strong category indicators
   const filterControls = document.querySelectorAll(
     '.filter, [class*="filter"], .sort, [class*="sort"], ' +
-    // Amazon-specific
     '[id*="filters"], [class*="refinement"], [id*="departments"], ' +
-    // Generic
     'select[name*="sort"], [aria-label*="filter"], [aria-label*="sort"]'
   ).length;
   if (filterControls > 0) {
@@ -201,33 +180,27 @@ function detectPageType(): PageTypeResult {
     signals.push('filter-controls');
   }
   
-  // Pagination is a category page indicator
   if (document.querySelector('.pagination, [class*="pagination"], [aria-label*="pagination"]')) {
     scores.category += 20;
     signals.push('pagination');
   }
   
-  // === PRODUCT PAGE DETECTION (Lower priority than category) ===
-  // Schema.org is the strongest signal for single product
   if (document.querySelector('[itemtype*="Product"]')) {
     scores.product += 50;
     signals.push('product-schema');
   }
   
-  // Add to cart button variants (CSS selector only - no text matching here)
   const addToCartButton = document.querySelector(
     'button[name*="add"], button[class*="add-to-cart"], [data-action*="add"], ' +
     'button[class*="addtocart"], button[class*="add_to_cart"], ' +
     '[class*="pdp-add"], [class*="add-to-bag"]'
   );
   if (addToCartButton) {
-    // Reduce score if there are many product cards (it's a category page)
     const addToCartScore = productCards > 3 ? 10 : 35;
     scores.product += addToCartScore;
     signals.push('add-to-cart-button');
   }
   
-  // Check for "ADD TO BAG/CART/BASKET" text in buttons (case-insensitive)
   const allButtons = Array.from(document.querySelectorAll('button'));
   const hasAddButton = allButtons.some(btn => 
     /add\s+to\s+(cart|bag|basket)/i.test(btn.textContent || '')
@@ -237,7 +210,6 @@ function detectPageType(): PageTypeResult {
     signals.push('add-text-button');
   }
   
-  // Single price element with product details
   const priceElements = document.querySelectorAll(
     '[itemprop="price"], .price, [class*="product-price"], [class*="pdp-price"], ' +
     '[class*="actual-price"], [class*="selling-price"]'
@@ -250,26 +222,22 @@ function detectPageType(): PageTypeResult {
     signals.push('few-prices');
   }
   
-  // URL patterns for single product (strong signal)
   if (path.includes('/product') || path.includes('/item') || path.includes('/p/') || 
-      path.includes('/dp/') || path.includes('/gp/product') || path.includes('/buy')) { // /buy endpoint
+      path.includes('/dp/') || path.includes('/gp/product') || path.includes('/buy')) {
     scores.product += 35;
     signals.push('product-url');
   }
   
-  // Product ID in URL is a very strong signal (5+ digits)
   if (/\/\d{5,}/.test(path) && productCards < 3) {
     scores.product += 40;
     signals.push('product-id-in-url');
   }
   
-  // Product-specific containers
   if (document.querySelector('.product-detail, #product, [class*="product-info"], [class*="pdp-"], [id*="pdp"]')) {
     scores.product += 20;
     signals.push('product-container');
   }
   
-  // Size/color selectors (common on product pages, not category pages)
   const hasSizeSelector = document.querySelector(
     '[class*="size-"], [class*="sizebutton"], select[name*="size"], ' +
     'input[name*="size"], [data-size]'
@@ -279,14 +247,12 @@ function detectPageType(): PageTypeResult {
     signals.push('size-selector');
   }
   
-  // Single product title (h1) with price nearby
   const h1Elements = document.querySelectorAll('h1');
   if (h1Elements.length === 1 && priceElements > 0 && priceElements < 3) {
     scores.product += 20;
     signals.push('single-title-with-price');
   }
   
-  // === POLICY PAGE DETECTION ===
   const policyKeywords = ['policy', 'terms', 'privacy', 'return', 'shipping', 'refund'];
   if (policyKeywords.some(kw => path.includes(kw))) {
     scores.policy += 50;
@@ -302,30 +268,25 @@ function detectPageType(): PageTypeResult {
     signals.push('long-text-content');
   }
   
-  // === HOME PAGE DETECTION ===
   if (path === '/' || path === '/index' || path === '/home') {
     scores.home += 50;
     signals.push('root-path');
   }
-  // Reduce navigation links score (common on all pages)
   if (document.querySelector('nav a[href*="shop"], nav a[href*="product"]') && path.length < 5) {
     scores.home += 15;
     signals.push('navigation-links');
   }
-  // Hero section only counts if on short path (likely homepage)
   if (document.querySelector('.hero, [class*="banner"], [class*="carousel"]') && path.length < 10) {
     scores.home += 10;
     signals.push('hero-section');
   }
   
-  // === DETERMINE BEST MATCH ===
   const entries = Object.entries(scores) as [keyof typeof scores, number][];
   entries.sort((a, b) => b[1] - a[1]);
   
   const topType = entries[0][0];
   const topScore = entries[0][1];
   
-  // If highest score is too low, mark as 'other'
   if (topScore < 15) {
     return { type: 'other', confidence: 0, signals: ['no-clear-signals'] };
   }
@@ -338,31 +299,23 @@ function detectPageType(): PageTypeResult {
 }
 
 async function handleAnalyzePage(payload: any) {
-  console.log('🔍 ANALYZE_PAGE message received in content script:', payload);
   const startTime = performance.now();
   
-  // Import storage service first
   const { StorageService } = await import('../services/storage');
   
   try {
-    // Seed impersonation patterns for RAG analysis (idempotent, safe to call repeatedly)
     try {
       await seedImpersonationPatterns();
-      console.log('✅ Impersonation patterns seeded for RAG');
     } catch (seedError) {
-      console.warn('⚠️ Failed to seed impersonation patterns (non-fatal):', seedError);
+      console.warn('Failed to seed impersonation patterns:', seedError);
     }
     
-    // Detect page type with confidence scoring
     const pageTypeResult = detectPageType();
     const pageType = pageTypeResult.type;
-    console.log(`📄 Page Type: ${pageType} (confidence: ${pageTypeResult.confidence}%, signals: ${pageTypeResult.signals.join(', ')})`);
     
-    // Try to acquire distributed lock to prevent duplicate analysis
     const lockAcquired = await StorageService.acquireAnalysisLock(window.location.href, pageType);
     
     if (!lockAcquired) {
-      console.log('⏳ Analysis already in progress in another tab');
       return {
         status: 'in_progress',
         message: 'Analysis is already running in another tab. Please wait or check that tab.',
@@ -371,20 +324,14 @@ async function handleAnalyzePage(payload: any) {
       };
     }
     
-    // Mark analysis as in progress with page context
     await StorageService.setAnalysisInProgress(window.location.href, pageType, payload?.includeAI !== false);
     
-    // Broadcast analysis start to other tabs
     crossTabSync.broadcastAnalysisStart(window.location.href, pageType);
     
-    // ============================================================================
-    // STEP 1: Create backend job BEFORE starting analysis
-    // ============================================================================
     let backendJobId: string | null = null;
     const sessionId = `${Date.now()}-${Math.random()}`;
     
     try {
-      console.log('📤 Creating backend job...');
       const jobResponse = await fetch(getApiUrl('/api/jobs'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -401,23 +348,18 @@ async function handleAnalyzePage(payload: any) {
         const jobData = await jobResponse.json();
         backendJobId = jobData.job?.id;
         if (backendJobId) {
-          console.log(`✅ Backend job created: ${backendJobId}`);
-          
-          // Notify service worker about the job for UI sync
           chrome.runtime.sendMessage({
             action: 'BACKEND_JOB_CREATED',
             payload: { jobId: backendJobId, url: window.location.href, pageType, sessionId }
           }).catch(err => console.warn('Failed to notify service worker:', err));
         }
       } else {
-        console.warn('⚠️ Backend job creation failed:', jobResponse.status);
+        console.warn('Backend job creation failed:', jobResponse.status);
       }
     } catch (jobError) {
-      console.warn('⚠️ Failed to create backend job:', jobError);
-      // Continue analysis even if backend job creation fails (graceful degradation)
+      console.warn('Failed to create backend job:', jobError);
     }
     
-    // Helper function to update backend job progress
     const updateBackendJobProgress = async (progress: number, stage: string, data?: any) => {
       if (!backendJobId) return;
       
@@ -427,18 +369,17 @@ async function handleAnalyzePage(payload: any) {
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             progress: Math.min(Math.max(progress, 0), 100),
-            status: 'in_progress',  // ← Add status so backend logs show real status
+            status: 'in_progress',
             stage,
             sessionId,
             ...data,
           })
-        }).catch(err => console.warn(`Failed to update job progress to ${progress}%:`, err));
+        }).catch(err => console.warn(`Failed to update job progress:`, err));
       } catch (error) {
         console.warn('Error updating backend job progress:', error);
       }
     };
     
-    // Helper function to send partial results progressively
     const sendPartialResult = async (partialData: any, phase: string) => {
       try {
         const partialResult = {
@@ -452,30 +393,20 @@ async function handleAnalyzePage(payload: any) {
           isEcommerceSite: true,
         };
         
-        // Send partial result to popup via runtime message
         chrome.runtime.sendMessage({
           action: 'PARTIAL_ANALYSIS_RESULT',
           payload: partialResult
         }).catch(err => console.warn('Failed to send partial result:', err));
-        
-        console.log(`📊 Sent partial result for phase: ${phase}`);
       } catch (error) {
-        console.warn(`⚠️ Failed to send partial result for ${phase}:`, error);
+        console.warn(`Failed to send partial result for ${phase}:`, error);
       }
     };
     
-    // Check AI availability early for offline mode detection
     const aiAvailable = await AIService.checkAvailability();
-    console.log(`🤖 AI Available: ${aiAvailable}`);
     
     // ========================================================================
     // PHASE 1: HEURISTIC ANALYSIS (Immediate, parallel)
     // ========================================================================
-    console.log(`\n⏱️  [${"═".repeat(35)}]`);
-    console.log(`� PHASE 1: HEURISTIC ANALYSIS (fast, always available)`);
-    console.log(`⏱️  [${"═".repeat(35)}]`);
-    
-    const phase1Start = performance.now();
     const [
       { security, domain, payment },
       { contact, policies }
@@ -483,16 +414,13 @@ async function handleAnalyzePage(payload: any) {
       runDomainSecurityChecks(),
       runContentPolicyChecks()
     ]);
-    const phase1Duration = performance.now() - phase1Start;
     
-    // Update backend job: heuristics complete (30% progress)
     await updateBackendJobProgress(30, 'heuristics', {
       heuristicsFinished: true,
       hasSecurityIssues: security.signals.length > 0,
       hasDomainIssues: domain.signals.length > 0,
     });
 
-    // Collect heuristic signals
     const heuristicSignals = [
       ...security.signals,
       ...domain.signals,
@@ -501,14 +429,7 @@ async function handleAnalyzePage(payload: any) {
       ...policies.signals,
     ];
     
-    console.log(`✅ PHASE 1 COMPLETE in ${phase1Duration.toFixed(0)}ms`);
-    console.log(`   Security signals: ${security.signals.length}`);
-    console.log(`   Domain signals: ${domain.signals.length}`);
-    console.log(`   Total heuristic signals: ${heuristicSignals.length}`);
-    console.log(`   Phishing check: domain age=${domain.ageInDays}d, social media=${contact.socialMediaProfiles.length}`);
-    
     const heuristicRiskAnalysis = RiskCalculator.calculateScore(heuristicSignals, domain?.ageInDays || null, contact);
-    console.log(`   Heuristic risk score: ${heuristicRiskAnalysis.totalScore}/100 (${heuristicRiskAnalysis.riskLevel})\n`);
     
     await sendPartialResult({
       security,
@@ -525,11 +446,6 @@ async function handleAnalyzePage(payload: any) {
       aiSignalsCount: 0,
       offlineMode: !aiAvailable,
     }, 'heuristic');
-    // ========================================================================
-    // PHASE 2: AI INITIALIZATION (downloads model, creates session)
-    // PHASE 3: AI-POWERED ANALYSIS (dark patterns + legitimacy)
-    // PHASE 4: SECONDARY DOMAIN AI ENHANCEMENT
-    // ========================================================================
     
     let aiSignals: any[] = [];
     let aiAnalysisTime = 0;
@@ -540,38 +456,24 @@ async function handleAnalyzePage(payload: any) {
                         pageType !== 'other';
     
     if (shouldRunAI) {
-      console.log(`\n⏱️  [${"═".repeat(35)}]`);
-      console.log(`📍 PHASE 2: AI INITIALIZATION`);
-      console.log(`⏱️  [${"═".repeat(35)}]`);
-      
       sendProgressUpdate(window.location.href, 'ai_init', 'Initializing', 'started', 30);
       
       const phase2Start = performance.now();
       const aiStartTime = performance.now();
 
       try {
-        // Initialize session first (will reuse if already exists)
         sendProgressUpdate(window.location.href, 'ai_init', 'Downloading AI model...', 'processing', 32);
         const initialized = await AIService.initializeSession();
         
         const phase2Duration = performance.now() - phase2Start;
 
         if (!initialized) {
-          console.warn(`⚠️ PHASE 2 FAILED: AI session initialization failed`);
+          console.warn('AI session initialization failed');
           aiAnalysisTime = performance.now() - aiStartTime;
           sendProgressUpdate(window.location.href, 'ai_init', 'Failed', 'completed', 35, phase2Duration);
         } else {
-          console.log(`✅ PHASE 2 COMPLETE in ${phase2Duration.toFixed(0)}ms (Gemini Nano ready)\n`);
           sendProgressUpdate(window.location.href, 'ai_init', 'Ready', 'completed', 35, phase2Duration);
           
-          console.log(`⏱️  [${"═".repeat(35)}]`);
-          console.log(`📍 PHASE 3: SEQUENTIAL AI ANALYSIS (domain → dark patterns → legitimacy)`);
-          console.log(`⏱️  [${"═".repeat(35)}]`);
-          
-          // ========================================================================
-          // PHASE 3a: DOMAIN AI ENHANCEMENT (FIRST - before other AI tasks)
-          // ========================================================================
-          console.log(`\n   [3a] Domain AI Enhancement (semantic impersonation)`);
           sendProgressUpdate(window.location.href, 'ai_domain', 'Initializing', 'started', 40);
           const phase3aStart = performance.now();
           try {
@@ -585,7 +487,6 @@ async function handleAnalyzePage(payload: any) {
             const phase3aDuration = performance.now() - phase3aStart;
             
             if (domainSignal) {
-              console.log(`   ✅ [3a] COMPLETE in ${phase3aDuration.toFixed(0)}ms (1 signal)`);
               sendProgressUpdate(
                 window.location.href,
                 'ai_domain',
@@ -597,7 +498,6 @@ async function handleAnalyzePage(payload: any) {
               );
               aiSignals.push(domainSignal);
             } else {
-              console.log(`   ✅ [3a] COMPLETE in ${phase3aDuration.toFixed(0)}ms (0 signals)`);
               sendProgressUpdate(
                 window.location.href,
                 'ai_domain',
@@ -609,23 +509,17 @@ async function handleAnalyzePage(payload: any) {
               );
             }
           } catch (domainAIError) {
-            console.warn(`   ⚠️ [3a] ERROR:`, domainAIError);
+            console.warn('Domain AI error:', domainAIError);
             sendProgressUpdate(window.location.href, 'ai_domain', 'Error', 'completed', 50);
-            // Continue to next AI task
           }
           
-          // ========================================================================
-          // PHASE 3b: DARK PATTERNS ANALYSIS (SECOND - after domain)
-          // ========================================================================
-          console.log(`\n   [3b] Dark Patterns Analysis`);
           sendProgressUpdate(window.location.href, 'ai_darkpattern', 'Initializing', 'started', 55);
           const phase3bStart = performance.now();
           
-          // Extract page content for AI analysis
           const pageContent = {
             url: window.location.href,
             title: document.title,
-            pageType: pageType, // Pass string type for AI
+            pageType: pageType,
             confidence: pageTypeResult.confidence,
             headings: Array.from(document.querySelectorAll('h1, h2, h3'))
               .map(el => el.textContent?.trim() || '')
@@ -645,7 +539,6 @@ async function handleAnalyzePage(payload: any) {
             sendProgressUpdate(window.location.href, 'ai_darkpattern', 'Scanning for deceptive practices...', 'processing', 60);
             const darkPatternSignals = await AIService.analyzeDarkPatterns(pageContent);
             const phase3bDuration = performance.now() - phase3bStart;
-            console.log(`   ✅ [3b] COMPLETE in ${phase3bDuration.toFixed(0)}ms (${darkPatternSignals.length} signals)`);
             
             sendProgressUpdate(
               window.location.href,
@@ -659,24 +552,17 @@ async function handleAnalyzePage(payload: any) {
             
             aiSignals.push(...darkPatternSignals);
           } catch (darkPatternsError) {
-            console.warn(`   ⚠️ [3b] ERROR:`, darkPatternsError);
+            console.warn('Dark patterns analysis error:', darkPatternsError);
             sendProgressUpdate(window.location.href, 'ai_darkpattern', 'Error', 'completed', 70);
-            // Continue to next AI task
           }
           
-          // ========================================================================
-          // PHASE 3c: LEGITIMACY ANALYSIS (THIRD - after dark patterns)
-          // ========================================================================
-          console.log(`\n   [3c] Legitimacy Analysis`);
           sendProgressUpdate(window.location.href, 'ai_legitimacy', 'Checking', 'started', 75);
           const phase3cStart = performance.now();
           
-          // Only run legitimacy on certain page types
           if (pageType === 'product' || pageType === 'checkout' || pageType === 'home') {
             sendProgressUpdate(window.location.href, 'ai_legitimacy', 'Analyzing brand presence...', 'processing', 80);
             const pageText = document.body.innerText || '';
             
-            // Extract social media data from profiles
             const socialMediaData = {
               facebook: contact.socialMediaProfiles.find(p => p.platform === 'facebook')?.url || null,
               twitter: contact.socialMediaProfiles.find(p => p.platform === 'twitter')?.url || null,
@@ -685,14 +571,6 @@ async function handleAnalyzePage(payload: any) {
               youtube: contact.socialMediaProfiles.find(p => p.platform === 'youtube')?.url || null,
               count: contact.socialMediaProfiles.length,
             };
-
-            console.log('   🧠 AI Context:', {
-              domainAge: domain.ageInDays ? `${domain.ageInDays} days` : 'Unknown',
-              registrar: domain.registrar || 'Unknown',
-              protectionFlags: domain.status?.length || 0,
-              socialMediaCount: socialMediaData.count,
-              hasContact: contact.hasContactPage || contact.hasEmail || contact.hasPhoneNumber,
-            });
             
             try {
               const legitimacySignals = await AIService.analyzeLegitimacy({
@@ -702,16 +580,13 @@ async function handleAnalyzePage(payload: any) {
                 hasHTTPS: security.isHttps,
                 hasContactInfo: contact.hasContactPage || contact.hasEmail || contact.hasPhoneNumber,
                 hasPolicies: policies.hasReturnRefundPolicy || policies.hasPrivacyPolicy,
-                // Enhanced context: Social media intelligence
                 socialMedia: socialMediaData,
-                // Enhanced context: Domain intelligence from WHOIS
                 domainAge: domain.ageInDays,
                 domainAgeYears: domain.ageInDays ? Math.floor(domain.ageInDays / 365) : null,
                 domainStatus: domain.status,
                 domainRegistrar: domain.registrar,
               });
               const phase3cDuration = performance.now() - phase3cStart;
-              console.log(`   ✅ [3c] COMPLETE in ${phase3cDuration.toFixed(0)}ms (${legitimacySignals.length} signals)`);
               
               sendProgressUpdate(
                 window.location.href,
@@ -725,11 +600,10 @@ async function handleAnalyzePage(payload: any) {
               
               aiSignals.push(...legitimacySignals);
             } catch (legitimacyError) {
-              console.warn(`   ⚠️ [3c] ERROR:`, legitimacyError);
+              console.warn('Legitimacy analysis error:', legitimacyError);
               sendProgressUpdate(window.location.href, 'ai_legitimacy', 'Error', 'completed', 85);
             }
           } else {
-            console.log(`   ⏭️  [3c] SKIPPED (not applicable for ${pageType} pages)`);
             sendProgressUpdate(
               window.location.href,
               'ai_legitimacy',
@@ -741,34 +615,16 @@ async function handleAnalyzePage(payload: any) {
           }
           
           aiAnalysisTime = performance.now() - aiStartTime;
-          console.log(`\n✅ PHASE 3 COMPLETE in ${aiAnalysisTime.toFixed(0)}ms (sequential)`);
-          console.log(`   AI signals collected: ${aiSignals.length}\n`);
-          
-          // ========================================================================
-          // PHASE 4: SIGNAL CONSOLIDATION & SCORE CALCULATION
-          // ========================================================================
-          console.log(`⏱️  [${"═".repeat(35)}]`);
-          console.log(`📍 PHASE 4: SIGNAL CONSOLIDATION & SCORE CALCULATION`);
-          console.log(`⏱️  [${"═".repeat(35)}]`);
-          
           sendProgressUpdate(window.location.href, 'consolidation', 'Consolidating signals...', 'started', 90);
           
           const phase4Start = performance.now();
           
           const allSignalsWithAI = [...heuristicSignals, ...aiSignals];
-          console.log(`   Consolidating signals:`);
-          console.log(`   - Heuristic signals: ${heuristicSignals.length}`);
-          console.log(`   - AI signals (Phase 3): ${aiSignals.length}`);
-          console.log(`   - Total signals: ${allSignalsWithAI.length}`);
           
           sendProgressUpdate(window.location.href, 'consolidation', 'Calculating final score...', 'processing', 95);
           const aiRiskAnalysis = RiskCalculator.calculateScore(allSignalsWithAI, domain?.ageInDays || null, contact);
           
           const phase4Duration = performance.now() - phase4Start;
-          console.log(`✅ PHASE 4 COMPLETE in ${phase4Duration.toFixed(0)}ms`);
-          console.log(`   Final risk score: ${aiRiskAnalysis.totalScore}/100`);
-          console.log(`   Risk level: ${aiRiskAnalysis.riskLevel}`);
-          console.log(`   Top concerns: ${aiRiskAnalysis.topConcerns?.slice(0,2).map(c => c.reason).join(', ') || 'None'}\n`);
           
           sendProgressUpdate(
             window.location.href,
@@ -780,7 +636,6 @@ async function handleAnalyzePage(payload: any) {
             { signalsFound: allSignalsWithAI.length, topFinding: `Risk: ${aiRiskAnalysis.riskLevel} (${aiRiskAnalysis.totalScore}/100)` }
           );
           
-          // Save final analysis to history
           const allPhases = progressCache.getPhaseResults(window.location.href) || [];
           progressCache.saveToHistory(
             window.location.href,
@@ -789,13 +644,11 @@ async function handleAnalyzePage(payload: any) {
             aiRiskAnalysis.riskLevel
           );
           
-          // Update backend job: AI analysis complete (65% progress)
           await updateBackendJobProgress(65, 'ai_analysis', {
             aiFinished: true,
             aiSignalsFound: aiSignals.length,
           });
           
-          // Send partial result after AI analysis
           await sendPartialResult({
             security,
             domain,
@@ -813,25 +666,16 @@ async function handleAnalyzePage(payload: any) {
         }
       } catch (aiError) {
         aiAnalysisTime = performance.now() - aiStartTime;
-        console.error(`⚠️ AI analysis failed after ${aiAnalysisTime.toFixed(0)}ms:`, aiError);
+        console.error('AI analysis failed:', aiError);
         
-        // Cleanup AI session on error
         try {
           AIService.destroySession();
-          console.log('🧹 AI session cleaned up after error');
         } catch (cleanupError) {
-          console.warn('⚠️ Failed to cleanup AI session:', cleanupError);
+          console.warn('Failed to cleanup AI session:', cleanupError);
         }
       }
-    } else {
-      const reason = !aiAvailable ? 'AI not available' : 
-                     pageType === 'policy' ? 'policy page' :
-                     pageType === 'other' ? 'unknown page type' :
-                     'AI disabled';
-      console.log(`⏭️ Skipping Phases 2-5: ${reason}`);
     }
     
-    // Collect all signals (heuristics + AI)
     const allSignals = [
       ...security.signals,
       ...domain.signals,
@@ -841,24 +685,10 @@ async function handleAnalyzePage(payload: any) {
       ...aiSignals,
     ];
     
-    // Use smart risk calculator with deduplication and proper normalization
-    // Pass domain age for trust factor calculation (critical for dampening)
     const domainAgeInDays = domain?.ageInDays || null;
     const riskAnalysis = RiskCalculator.calculateScore(allSignals, domainAgeInDays, contact);
-    const totalRiskScore = riskAnalysis.totalScore; // Guaranteed 0-100
+    const totalRiskScore = riskAnalysis.totalScore;
     const riskLevel = riskAnalysis.riskLevel;
-    
-    console.log('📊 Risk Analysis Breakdown:', {
-      totalScore: `${riskAnalysis.totalScore}/100`,
-      riskLevel: riskAnalysis.riskLevel,
-      categories: {
-        security: `${riskAnalysis.breakdown.security.percentage}% (${riskAnalysis.breakdown.security.signals.length} signals)`,
-        legitimacy: `${riskAnalysis.breakdown.legitimacy.percentage}% (${riskAnalysis.breakdown.legitimacy.signals.length} signals)`,
-        darkPatterns: `${riskAnalysis.breakdown.darkPattern.percentage}% (${riskAnalysis.breakdown.darkPattern.signals.length} signals)`,
-        policies: `${riskAnalysis.breakdown.policy.percentage}% (${riskAnalysis.breakdown.policy.signals.length} signals)`,
-      },
-      topConcerns: riskAnalysis.topConcerns.map(s => `${s.reason} (${s.score})`),
-    });
     
     const analysis = {
       url: window.location.href,
