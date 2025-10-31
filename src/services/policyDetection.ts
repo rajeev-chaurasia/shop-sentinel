@@ -20,6 +20,21 @@ export interface PolicyDetectionResult {
   title: string;
   content: string;
   signals?: string[];
+  legitimacy?: PolicyLegitimacyResult;
+}
+
+export interface PolicyLegitimacyResult {
+  isLegitimate: boolean;
+  score: number; // 0-100, higher is more legitimate
+  warnings: string[];
+  redFlags: string[];
+  concerns: {
+    tooVague: boolean;
+    tooShort: boolean;
+    missingKeyInfo: boolean;
+    suspiciousPatterns: boolean;
+    poorQuality: boolean;
+  };
 }
 
 export interface PolicySummaryResult {
@@ -102,12 +117,28 @@ export class PolicyDetectionService {
     if (initialDetection.score >= 40) {
       const verificationResult = this.performContentVerification(content, path, title);
       
-      // Combine results - both steps must pass
-      const finalScore = Math.min(initialDetection.score, verificationResult.score);
-      const isPolicyPage = finalScore >= 45;
+      // Check if URL has strong policy indicators
+      const hasStrongUrlMatch = initialDetection.signals.includes('policy-url');
+      
+      // Combine results - use weighted approach for strong URL matches
+      let finalScore: number;
+      if (hasStrongUrlMatch && verificationResult.score >= 15) {
+        // For strong URL matches, be more lenient - just need some content verification
+        // Weight: 70% URL/title detection + 30% content verification
+        finalScore = Math.round(initialDetection.score * 0.7 + verificationResult.score * 0.3);
+      } else {
+        // For weak URL matches, require both to be strong (original logic)
+        finalScore = Math.min(initialDetection.score, verificationResult.score);
+      }
+      
+      const isPolicyPage = finalScore >= 40;
       
       if (isPolicyPage) {
         const policyType = this.determinePolicyType(path, title, content);
+        
+        // Assess policy legitimacy to detect vague or suspicious content
+        const legitimacy = this.assessPolicyLegitimacy(document.body.innerText, policyType);
+        
         return {
           isPolicyPage: true,
           policyType,
@@ -115,7 +146,8 @@ export class PolicyDetectionService {
           url,
           title: document.title,
           content: document.body.innerText,
-          signals: [...initialDetection.signals, ...verificationResult.signals]
+          signals: [...initialDetection.signals, ...verificationResult.signals],
+          legitimacy
         };
       }
     }
@@ -138,25 +170,61 @@ export class PolicyDetectionService {
     let policyScore = 0;
     const signals: string[] = [];
 
-    // URL-based detection (strongest signal)
+    const productPageIndicators = [
+      'add to cart', 'add to bag', 'buy now', 'shop now', 'purchase',
+      'in stock', 'out of stock', 'quantity', 'color:', 'size:',
+      'product details', 'product description', 'specifications',
+      'customer reviews', 'star rating', 'write a review',
+      'shipping & returns', 'free delivery', 'extended returns',
+      'add to wishlist', 'add to registry', 'compare', 'share'
+    ];
+    
+    const productIndicatorCount = productPageIndicators.filter(indicator => 
+      content.includes(indicator)
+    ).length;
+    
+    if (productIndicatorCount >= 3) {
+      signals.push('product-page-detected');
+      return { score: 0, signals };
+    }
+    
+    const productUrlPatterns = ['/product/', '/item/', '/p/', '/dp/', '/gp/product', '/ip/'];
+    if (productUrlPatterns.some(pattern => path.includes(pattern))) {
+      signals.push('product-url-detected');
+      return { score: 0, signals };
+    }
+    
+    const categoryUrlPatterns = ['/category/', '/collection/', '/shop/', '/browse/', '/search'];
+    const categoryPageIndicators = [
+      'items found', 'results for', 'filter by', 'sort by',
+      'price range', 'clear all', 'showing', 'of', 'results',
+      'next page', 'previous page', 'per page'
+    ];
+    
+    const categoryIndicatorCount = categoryPageIndicators.filter(indicator => 
+      content.includes(indicator)
+    ).length;
+    
+    if (categoryUrlPatterns.some(pattern => path.includes(pattern)) || categoryIndicatorCount >= 2) {
+      signals.push('category-page-detected');
+      return { score: 0, signals };
+    }
+
     if (this.POLICY_KEYWORDS.some(keyword => path.includes(keyword))) {
       policyScore += 50;
       signals.push('policy-url');
     }
 
-    // Title-based detection
     if (this.POLICY_KEYWORDS.some(keyword => title.includes(keyword))) {
       policyScore += 30;
       signals.push('policy-title');
     }
 
-    // Basic content detection
     if (this.POLICY_CONTENT_INDICATORS.some(indicator => content.includes(indicator))) {
       policyScore += 25;
       signals.push('policy-content');
     }
 
-    // Document structure detection
     const textLength = document.body.innerText.length;
     const headingCount = document.querySelectorAll('h1, h2, h3').length;
     
@@ -232,22 +300,27 @@ export class PolicyDetectionService {
     }
 
     // Anti-patterns (things that indicate this is NOT a policy page)
-    const antiPatterns = [
-      'add to cart', 'buy now', 'shop now', 'checkout', 'payment',
-      'product details', 'customer reviews', 'related products',
-      'newsletter signup', 'social media', 'follow us'
-    ];
+    // Only apply if URL doesn't clearly indicate a policy page
+    const hasStrongPolicyUrl = this.POLICY_KEYWORDS.some(keyword => path.includes(keyword));
     
-    const antiPatternCount = antiPatterns.filter(pattern => 
-      content.includes(pattern)
-    ).length;
-    
-    if (antiPatternCount >= 4) {
-      verificationScore -= 20; // Reduced penalty for e-commerce content
-      signals.push(`anti-patterns-${antiPatternCount}`);
-    } else if (antiPatternCount >= 2) {
-      verificationScore -= 10; // Light penalty
-      signals.push(`anti-patterns-${antiPatternCount}`);
+    if (!hasStrongPolicyUrl) {
+      const antiPatterns = [
+        'add to cart', 'buy now', 'shop now', 'checkout', 'payment',
+        'product details', 'customer reviews', 'related products',
+        'newsletter signup', 'social media', 'follow us'
+      ];
+      
+      const antiPatternCount = antiPatterns.filter(pattern => 
+        content.includes(pattern)
+      ).length;
+      
+      if (antiPatternCount >= 4) {
+        verificationScore -= 20; // Reduced penalty for e-commerce content
+        signals.push(`anti-patterns-${antiPatternCount}`);
+      } else if (antiPatternCount >= 2) {
+        verificationScore -= 10; // Light penalty
+        signals.push(`anti-patterns-${antiPatternCount}`);
+      }
     }
 
     // URL path depth analysis (policies are usually deeper in site structure)
@@ -475,5 +548,239 @@ Policy content: ${detectionResult.content.slice(0, 8000)}`;
 
   static getCurrentPagePolicyType(): PolicyDetectionResult['policyType'] {
     return this.detectPolicyPage().policyType;
+  }
+
+  /**
+   * Assess the legitimacy and quality of a policy page
+   * Detects vague, incomplete, or suspicious policy content
+   */
+  static assessPolicyLegitimacy(content: string, policyType: string): PolicyLegitimacyResult {
+    let score = 100; // Start with perfect score, deduct for issues
+    const warnings: string[] = [];
+    const redFlags: string[] = [];
+    const concerns = {
+      tooVague: false,
+      tooShort: false,
+      missingKeyInfo: false,
+      suspiciousPatterns: false,
+      poorQuality: false,
+    };
+
+    const lowerContent = content.toLowerCase();
+    const wordCount = content.split(/\s+/).length;
+    const sentenceCount = content.split(/[.!?]+/).length;
+
+    // 1. CHECK LENGTH - Legitimate policies should be substantial
+    if (wordCount < 150) {
+      score -= 50;
+      concerns.tooShort = true;
+      redFlags.push('Policy is extremely short (less than 150 words)');
+      warnings.push('This policy appears suspiciously brief and incomplete');
+    } else if (wordCount < 300) {
+      score -= 30;
+      concerns.tooShort = true;
+      warnings.push('Policy content is minimal (less than 300 words) - may lack important details');
+    } else if (wordCount < 500) {
+      score -= 10;
+      concerns.tooShort = true;
+      warnings.push('Policy is shorter than typical - verify all important terms are covered');
+    }
+
+    // 2. CHECK FOR VAGUE LANGUAGE
+    const vaguePatterns = [
+      'may vary', 'at our discretion', 'we reserve the right', 'subject to change',
+      'without notice', 'as we see fit', 'at any time', 'for any reason',
+      'sole discretion', 'absolute discretion', 'we have no control', 'cannot tell you',
+      'may be required', 'might be', 'could be', 'possibly', 'approximately',
+      'we are not responsible', 'not liable', 'no liability', 'no guarantee'
+    ];
+    
+    const vagueCount = vaguePatterns.filter(pattern => lowerContent.includes(pattern)).length;
+    if (vagueCount >= 5) {
+      score -= 35;
+      concerns.tooVague = true;
+      redFlags.push('Contains excessive vague or discretionary language');
+      warnings.push('Policy uses many vague terms that favor the business over customers');
+    } else if (vagueCount >= 3) {
+      score -= 20;
+      concerns.tooVague = true;
+      warnings.push('Policy contains significant vague or unclear terms');
+    } else if (vagueCount >= 2) {
+      score -= 10;
+      concerns.tooVague = true;
+      warnings.push('Policy has some vague language - read carefully');
+    }
+    
+    // 2b. CHECK FOR DISCLAIMER-HEAVY CONTENT (new check)
+    const disclaimerPatterns = [
+      'we are not responsible', 'not our responsibility', 'we cannot',
+      'we have no control', 'beyond our control', 'cannot guarantee',
+      'you are responsible', 'buyer beware', 'at your own risk',
+      'we disclaim', 'no warranty', 'as is'
+    ];
+    
+    const disclaimerCount = disclaimerPatterns.filter(pattern => lowerContent.includes(pattern)).length;
+    if (disclaimerCount >= 4) {
+      score -= 25;
+      concerns.tooVague = true;
+      redFlags.push('Policy is heavily focused on disclaimers and limitations');
+      warnings.push('Policy emphasizes what they WON\'T do rather than customer protection');
+    } else if (disclaimerCount >= 2) {
+      score -= 10;
+      warnings.push('Policy contains multiple disclaimers limiting seller responsibility');
+    }
+
+    // 3. CHECK FOR MISSING KEY INFORMATION (based on policy type)
+    const missingInfo = this.checkMissingKeyInfo(lowerContent, policyType);
+    if (missingInfo.length > 0) {
+      score -= missingInfo.length * 10;
+      concerns.missingKeyInfo = true;
+      missingInfo.forEach(info => warnings.push(`Missing important info: ${info}`));
+    }
+
+    // 4. CHECK FOR SUSPICIOUS PATTERNS
+    const suspiciousPatterns = [
+      'no refunds', 'all sales final', 'non-refundable', 'no returns',
+      'we are not responsible', 'buyer beware', 'as is',
+      'no warranty', 'no guarantee', 'use at your own risk'
+    ];
+    
+    const suspiciousCount = suspiciousPatterns.filter(pattern => lowerContent.includes(pattern)).length;
+    if (suspiciousCount >= 4) {
+      score -= 25;
+      concerns.suspiciousPatterns = true;
+      redFlags.push('Contains multiple consumer-unfriendly terms');
+      warnings.push('Policy heavily favors the seller with little customer protection');
+    } else if (suspiciousCount >= 2) {
+      score -= 10;
+      concerns.suspiciousPatterns = true;
+      warnings.push('Policy contains some unfavorable terms for customers');
+    }
+
+    // 5. CHECK CONTENT QUALITY
+    const avgSentenceLength = wordCount / Math.max(sentenceCount, 1);
+    const hasPunctuation = content.match(/[.!?,;:]/) !== null;
+    const hasProperCapitalization = content.match(/[A-Z]/) !== null;
+    
+    if (!hasPunctuation || !hasProperCapitalization || avgSentenceLength < 5) {
+      score -= 15;
+      concerns.poorQuality = true;
+      warnings.push('Policy text appears poorly formatted or unprofessional');
+    }
+
+    // 6. CHECK FOR PLACEHOLDER TEXT
+    const placeholderPatterns = [
+      '[company name]', '[insert', 'lorem ipsum', 'xxx', 'tbd',
+      '[your company]', '[business name]', 'example.com'
+    ];
+    
+    if (placeholderPatterns.some(pattern => lowerContent.includes(pattern))) {
+      score -= 50;
+      concerns.poorQuality = true;
+      redFlags.push('Contains placeholder text - policy is incomplete');
+      warnings.push('This policy has not been properly customized');
+    }
+
+    // 7. CHECK FOR GIBBERISH OR REPEATED TEXT
+    const words = content.split(/\s+/);
+    const uniqueWords = new Set(words.map(w => w.toLowerCase()));
+    const uniqueRatio = uniqueWords.size / Math.max(words.length, 1);
+    
+    if (uniqueRatio < 0.3 && wordCount > 50) {
+      score -= 20;
+      concerns.poorQuality = true;
+      warnings.push('Policy contains excessive repetition or filler text');
+    }
+
+    // 8. CHECK FOR COMPLETE ABSENCE OF KEY TERMS
+    const essentialTerms = ['customer', 'buyer', 'purchase', 'order', 'product', 'service'];
+    const hasEssentialTerms = essentialTerms.some(term => lowerContent.includes(term));
+    
+    if (!hasEssentialTerms && wordCount > 50) {
+      score -= 30;
+      concerns.poorQuality = true;
+      redFlags.push('Policy lacks basic commerce terminology');
+      warnings.push('This may not be a genuine policy page');
+    }
+
+    // Ensure score stays within 0-100 range
+    score = Math.max(0, Math.min(100, score));
+
+    // Determine if legitimate based on score (stricter threshold)
+    // Score >= 70 and no red flags = legitimate
+    // Score 50-69 = borderline (show warnings)
+    // Score < 50 or has red flags = not legitimate
+    const isLegitimate = score >= 70 && redFlags.length === 0;
+    
+    // Add borderline warning if score is between 50-69
+    if (score >= 50 && score < 70 && redFlags.length === 0) {
+      warnings.unshift('⚠️ This policy has some quality concerns - review carefully before purchasing');
+    }
+    
+    // Add critical warning if score is below 50
+    if (score < 50) {
+      warnings.unshift('🚨 This policy has significant quality issues - proceed with extreme caution');
+    }
+
+    return {
+      isLegitimate,
+      score,
+      warnings,
+      redFlags,
+      concerns,
+    };
+  }
+
+  /**
+   * Check for missing key information based on policy type
+   */
+  private static checkMissingKeyInfo(content: string, policyType: string): string[] {
+    const missing: string[] = [];
+
+    switch (policyType) {
+      case 'returnRefund':
+        if (!content.includes('day') && !content.includes('week') && !content.includes('month')) {
+          missing.push('Time frame for returns/refunds');
+        }
+        if (!content.includes('condition') && !content.includes('original packaging') && !content.includes('unused')) {
+          missing.push('Condition requirements for returns');
+        }
+        if (!content.includes('refund') && !content.includes('exchange') && !content.includes('credit')) {
+          missing.push('Refund method or process');
+        }
+        break;
+
+      case 'shipping':
+        if (!content.includes('day') && !content.includes('business day') && !content.includes('delivery')) {
+          missing.push('Delivery timeframe');
+        }
+        if (!content.includes('cost') && !content.includes('fee') && !content.includes('free') && !content.includes('charge')) {
+          missing.push('Shipping costs');
+        }
+        break;
+
+      case 'privacy':
+        if (!content.includes('personal information') && !content.includes('personal data') && !content.includes('collect')) {
+          missing.push('What personal information is collected');
+        }
+        if (!content.includes('use') && !content.includes('purpose')) {
+          missing.push('How personal data is used');
+        }
+        if (!content.includes('share') && !content.includes('third party') && !content.includes('disclose')) {
+          missing.push('Whether data is shared with third parties');
+        }
+        break;
+
+      case 'terms':
+        if (!content.includes('agree') && !content.includes('accept') && !content.includes('consent')) {
+          missing.push('User agreement language');
+        }
+        if (!content.includes('liability') && !content.includes('responsible')) {
+          missing.push('Liability terms');
+        }
+        break;
+    }
+
+    return missing;
   }
 }

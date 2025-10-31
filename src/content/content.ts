@@ -76,6 +76,7 @@ async function handleGetPageInfo() {
     isPolicyPage: policyDetection.isPolicyPage,
     policyType: policyDetection.policyType,
     policyConfidence: policyDetection.confidence,
+    policyLegitimacy: policyDetection.legitimacy || null,
   };
 }
 
@@ -1185,6 +1186,37 @@ async function handleUrlChange(oldUrl: string, newUrl: string) {
           await StorageService.clearCachedAnalysis(newUrl, newType);
         }
       }
+    }
+    
+    // Detect if new page is a policy page and notify popup
+    const policyDetection = PolicyDetectionService.detectPolicyPage();
+    if (policyDetection.isPolicyPage) {
+      console.log(`📄 Navigated to policy page: ${policyDetection.policyType}`);
+      // Send message to runtime (popup will receive if open)
+      chrome.runtime.sendMessage({
+        action: 'POLICY_PAGE_DETECTED',
+        payload: {
+          isPolicyPage: true,
+          policyType: policyDetection.policyType,
+          policyConfidence: policyDetection.confidence,
+          url: newUrl,
+        }
+      }).catch(() => {
+        // Ignore errors if popup is not open
+      });
+    } else {
+      // Notify that we're no longer on a policy page
+      chrome.runtime.sendMessage({
+        action: 'POLICY_PAGE_DETECTED',
+        payload: {
+          isPolicyPage: false,
+          policyType: 'other',
+          policyConfidence: 0,
+          url: newUrl,
+        }
+      }).catch(() => {
+        // Ignore errors if popup is not open
+      });
     }
   } catch (error) {
     console.error('⚠️ Error handling URL change:', error);

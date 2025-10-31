@@ -4,7 +4,6 @@ import { MessagingService } from '../services/messaging';
 import { StorageService } from '../services/storage';
 import { cacheService } from '../services/cache';
 import { crossTabSync } from '../services/crossTabSync';
-import { PolicyDetectionService } from '../services/policyDetection';
 import { progressCache } from '../services/progressCache';
 import type { AnalysisResult } from '../types';
 import type { PhaseResult, AnalysisHistoryItem } from '../types/messages';
@@ -22,9 +21,11 @@ function App() {
   const [showSettings, setShowSettings] = useState(false);
   
   const [isPolicyPage, setIsPolicyPage] = useState(false);
+  // @ts-ignore - policyType is set but not displayed to user (kept for debugging/future use)
   const [policyType, setPolicyType] = useState<string>('');
   const [policyAnalysis, setPolicyAnalysis] = useState<any>(null);
   const [isAnalyzingPolicy, setIsAnalyzingPolicy] = useState(false);
+  const [policyLegitimacy, setPolicyLegitimacy] = useState<any>(null);
   
   const [theme, setTheme] = useState<'light' | 'dark' | 'auto'>('auto');
   const [notifications, setNotifications] = useState(true);
@@ -110,15 +111,23 @@ function App() {
       if (pageInfo?.data?.isPolicyPage) {
         setIsPolicyPage(true);
         setPolicyType(pageInfo.data.policyType || 'policy');
+        setPolicyLegitimacy(pageInfo.data.policyLegitimacy || null);
         console.log(`📄 Policy page detected: ${pageInfo.data.policyType} (confidence: ${pageInfo.data.policyConfidence}%)`);
+        
+        // Log legitimacy warnings if any
+        if (pageInfo.data.policyLegitimacy && !pageInfo.data.policyLegitimacy.isLegitimate) {
+          console.warn('⚠️ Policy legitimacy concerns:', pageInfo.data.policyLegitimacy);
+        }
       } else {
         setIsPolicyPage(false);
         setPolicyType('');
+        setPolicyLegitimacy(null);
       }
     } catch (error) {
       console.error('❌ Failed to check policy page:', error);
       setIsPolicyPage(false);
       setPolicyType('');
+      setPolicyLegitimacy(null);
     }
   };
 
@@ -211,6 +220,8 @@ function App() {
             // Update icon badge for cached results
             updateIconForCachedResult(cached);
             completeAnalysis();
+            // Check if current page is a policy page after analysis completes
+            checkPolicyPage();
             clearInterval(interval);
             setPollInterval(null);
           }
@@ -291,6 +302,8 @@ function App() {
                   showRiskNotification(cached.result);
                   // CRITICAL: Always complete analysis when result arrives
                   completeAnalysis();
+                  // Check if current page is a policy page after analysis completes
+                  checkPolicyPage();
                 }
               }
               // Legacy support: direct result object (shouldn't happen with new storage format)
@@ -302,6 +315,8 @@ function App() {
                 updateIconForCachedResult(cached);
                 // CRITICAL: Always complete analysis when result arrives
                 completeAnalysis();
+                // Check if current page is a policy page after analysis completes
+                checkPolicyPage();
               }
             }
           }
@@ -566,6 +581,25 @@ function App() {
           } catch (error) {
             console.warn('⚠️ Failed to clear partial results:', error);
           }
+          
+          // Check if current page is a policy page after analysis completes
+          await checkPolicyPage();
+        }
+      } else if (message.action === 'POLICY_PAGE_DETECTED' && message.payload) {
+        // Handle policy page detection from content script (URL changes)
+        console.log('📄 Policy page detection message received:', message.payload);
+        const { isPolicyPage: isPolicy, policyType: type, url } = message.payload;
+        
+        // Verify this is for the current tab
+        const tab = await MessagingService.getActiveTab();
+        if (tab?.url === url) {
+          setIsPolicyPage(isPolicy);
+          setPolicyType(type || '');
+          // Reset policy analysis when navigating to a new policy page
+          if (isPolicy) {
+            setPolicyAnalysis(null);
+            console.log(`📄 Policy page detected via URL change: ${type}`);
+          }
         }
       }
     };
@@ -602,6 +636,9 @@ function App() {
         } else {
           console.warn('⚠️ Analysis result received but failed validation');
         }
+        
+        // Check if current page is a policy page after analysis completes
+        checkPolicyPage();
       }
     });
 
@@ -1112,8 +1149,63 @@ function App() {
                         </h3>
                       </div>
                       <p className="text-sm text-green-700 dark:text-green-300">
-                        This appears to be a <strong>{PolicyDetectionService.getPolicyTypeName(policyType as any)}</strong> page. Get AI-powered insights about key terms and conditions.
+                        Get AI-powered insights about key terms and conditions.
                       </p>
+                      
+                      {policyLegitimacy && (!policyLegitimacy.isLegitimate || policyLegitimacy.score < 80) && (policyLegitimacy.warnings.length > 0 || policyLegitimacy.redFlags.length > 0) && (
+                        <div className={`mt-3 p-3 border-2 rounded-lg ${
+                          policyLegitimacy.score < 50 || policyLegitimacy.redFlags.length > 0
+                            ? 'bg-red-50 dark:bg-red-900 border-red-400 dark:border-red-600'
+                            : policyLegitimacy.score < 70
+                            ? 'bg-orange-50 dark:bg-orange-900 border-orange-400 dark:border-orange-600'
+                            : 'bg-yellow-50 dark:bg-yellow-900 border-yellow-400 dark:border-yellow-600'
+                        }`}>
+                          <div className="flex items-start gap-2">
+                            <span className="text-xl flex-shrink-0">{policyLegitimacy.score < 50 || policyLegitimacy.redFlags.length > 0 ? '🚨' : '⚠️'}</span>
+                            <div className="flex-1 text-left">
+                              <h4 className={`text-sm font-bold mb-2 ${
+                                policyLegitimacy.score < 50 || policyLegitimacy.redFlags.length > 0
+                                  ? 'text-red-800 dark:text-red-200'
+                                  : policyLegitimacy.score < 70
+                                  ? 'text-orange-800 dark:text-orange-200'
+                                  : 'text-yellow-800 dark:text-yellow-200'
+                              }`}>Policy Quality {policyLegitimacy.score < 50 ? 'Issues' : 'Concerns'}</h4>
+                              
+                              {policyLegitimacy.redFlags.length > 0 && (
+                                <div className="mb-2">
+                                  <p className="text-xs font-semibold text-red-700 dark:text-red-300 mb-1">Critical Issues:</p>
+                                  <ul className="text-xs text-red-600 dark:text-red-400 space-y-1">
+                                    {policyLegitimacy.redFlags.map((flag: string, idx: number) => (
+                                      <li key={idx} className="flex items-start gap-1">
+                                        <span>•</span>
+                                        <span>{flag}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                              
+                              {policyLegitimacy.warnings.length > 0 && (
+                                <div>
+                                  <p className="text-xs font-semibold text-orange-700 dark:text-orange-300 mb-1">Warnings:</p>
+                                  <ul className="text-xs text-orange-600 dark:text-orange-400 space-y-1">
+                                    {policyLegitimacy.warnings.slice(0, 3).map((warning: string, idx: number) => (
+                                      <li key={idx} className="flex items-start gap-1">
+                                        <span>•</span>
+                                        <span>{warning}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                              
+                              <div className="mt-2 text-xs text-red-700 dark:text-red-300 font-semibold">
+                                Legitimacy Score: {policyLegitimacy.score}/100
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+                      )}
                       
                       {!policyAnalysis ? (
                         <button 
@@ -1407,6 +1499,132 @@ function App() {
                 {activeTab === 'policies' && (
                   <div className="pt-2 animate-fadeIn">
                     <PolicySummary policies={currentResult!.policies} compact={false} />
+                    
+                    {/* Policy Analysis Option - Show when on policy page */}
+                    {isPolicyPage && (
+                      <div className="mt-4 p-4 bg-gradient-to-br from-green-50 to-emerald-50 dark:from-green-900 dark:to-emerald-800 border-2 border-green-300 dark:border-green-600 rounded-xl shadow-sm">
+                        <div className="text-center space-y-3">
+                          <div className="flex items-center justify-center gap-2">
+                            <span className="text-2xl">📄</span>
+                            <h3 className="text-lg font-bold text-green-800 dark:text-green-200">
+                              Policy Page Detected
+                            </h3>
+                          </div>
+                          <p className="text-sm text-green-700 dark:text-green-300">
+                            Get AI-powered insights about key terms and conditions.
+                          </p>
+                          
+                          {policyLegitimacy && (!policyLegitimacy.isLegitimate || policyLegitimacy.score < 80) && (policyLegitimacy.warnings.length > 0 || policyLegitimacy.redFlags.length > 0) && (
+                            <div className={`mt-3 p-3 border-2 rounded-lg ${
+                              policyLegitimacy.score < 50 || policyLegitimacy.redFlags.length > 0
+                                ? 'bg-red-50 dark:bg-red-900 border-red-400 dark:border-red-600'
+                                : policyLegitimacy.score < 70
+                                ? 'bg-orange-50 dark:bg-orange-900 border-orange-400 dark:border-orange-600'
+                                : 'bg-yellow-50 dark:bg-yellow-900 border-yellow-400 dark:border-yellow-600'
+                            }`}>
+                              <div className="flex items-start gap-2">
+                                <span className="text-xl flex-shrink-0">{policyLegitimacy.score < 50 || policyLegitimacy.redFlags.length > 0 ? '🚨' : '⚠️'}</span>
+                                <div className="flex-1 text-left">
+                                  <h4 className={`text-sm font-bold mb-2 ${
+                                    policyLegitimacy.score < 50 || policyLegitimacy.redFlags.length > 0
+                                      ? 'text-red-800 dark:text-red-200'
+                                      : policyLegitimacy.score < 70
+                                      ? 'text-orange-800 dark:text-orange-200'
+                                      : 'text-yellow-800 dark:text-yellow-200'
+                                  }`}>Policy Quality {policyLegitimacy.score < 50 ? 'Issues' : 'Concerns'}</h4>
+                                  
+                                  {policyLegitimacy.redFlags.length > 0 && (
+                                    <div className="mb-2">
+                                      <p className="text-xs font-semibold text-red-700 dark:text-red-300 mb-1">Critical Issues:</p>
+                                      <ul className="text-xs text-red-600 dark:text-red-400 space-y-1">
+                                        {policyLegitimacy.redFlags.map((flag: string, idx: number) => (
+                                          <li key={idx} className="flex items-start gap-1">
+                                            <span>•</span>
+                                            <span>{flag}</span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                  
+                                  {policyLegitimacy.warnings.length > 0 && (
+                                    <div>
+                                      <p className="text-xs font-semibold text-orange-700 dark:text-orange-300 mb-1">Warnings:</p>
+                                      <ul className="text-xs text-orange-600 dark:text-orange-400 space-y-1">
+                                        {policyLegitimacy.warnings.slice(0, 3).map((warning: string, idx: number) => (
+                                          <li key={idx} className="flex items-start gap-1">
+                                            <span>•</span>
+                                            <span>{warning}</span>
+                                          </li>
+                                        ))}
+                                      </ul>
+                                    </div>
+                                  )}
+                                  
+                                  <div className="mt-2 text-xs text-red-700 dark:text-red-300 font-semibold">
+                                    Legitimacy Score: {policyLegitimacy.score}/100
+                                  </div>
+                                </div>
+                              </div>
+                            </div>
+                          )}
+                          
+                          {!policyAnalysis ? (
+                            <button 
+                              onClick={analyzePolicy} 
+                              disabled={isAnalyzingPolicy}
+                              className="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 disabled:from-gray-400 disabled:to-gray-500 text-white font-bold py-3 px-4 rounded-lg transition-all duration-200 shadow-md hover:shadow-lg transform hover:scale-105 disabled:transform-none disabled:opacity-50"
+                            >
+                              {isAnalyzingPolicy ? (
+                                <span className="flex items-center justify-center gap-2">
+                                  <span className="animate-spin">🤖</span>
+                                  <span>Analyzing Policy...</span>
+                                </span>
+                              ) : (
+                                <span className="flex items-center justify-center gap-2">
+                                  <span>🤖</span>
+                                  <span>Analyze Policy</span>
+                                </span>
+                              )}
+                            </button>
+                          ) : (
+                            <div className="text-left space-y-2">
+                              <h4 className="font-bold text-green-800 dark:text-green-200">AI Summary:</h4>
+                              <div className="space-y-1">
+                                {policyAnalysis.policySummary?.summary?.map((point: string, idx: number) => (
+                                  <div key={idx} className="text-sm text-green-700 dark:text-green-300 flex items-start gap-2">
+                                    <span className="text-green-600 dark:text-green-400 flex-shrink-0">•</span>
+                                    <span>{point}</span>
+                                  </div>
+                                ))}
+                              </div>
+                              
+                              {policyAnalysis.policySummary?.keyPoints?.returnWindow && (
+                                <div className="mt-2 p-2 bg-white dark:bg-green-800 bg-opacity-60 rounded-lg">
+                                  <span className="text-sm font-semibold text-green-800 dark:text-green-200">
+                                    ⏱️ Return Window: {policyAnalysis.policySummary.keyPoints.returnWindow}
+                                  </span>
+                                </div>
+                              )}
+                              
+                              {policyAnalysis.policySummary?.riskFactors?.length > 0 && (
+                                <div className="mt-2">
+                                  <h5 className="text-sm font-bold text-red-700 dark:text-red-300">⚠️ Important Conditions:</h5>
+                                  <ul className="text-xs text-red-600 dark:text-red-400 space-y-1">
+                                    {policyAnalysis.policySummary.riskFactors.map((risk: string, idx: number) => (
+                                      <li key={idx} className="flex items-start gap-1">
+                                        <span>•</span>
+                                        <span>{risk}</span>
+                                      </li>
+                                    ))}
+                                  </ul>
+                                </div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
