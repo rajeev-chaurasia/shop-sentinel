@@ -548,15 +548,21 @@ export async function runDomainSecurityChecks(): Promise<{
   let domainResult: DomainAnalysis;
   console.log(`🛡️ Running domain legitimacy checks...`);
   
-  // Always get domain age - critical for dampening decisions
-  const domainAgeResult = await checkDomainAge(currentDomain);
+  // Phase 1 uses fast heuristic checks only:
+  // - URL pattern checks (fast synchronous check)
+  // - WHOIS domain age check (for trust calculation)
+  // Note: AI-powered domain impersonation analysis happens in Phase 3a (RAG-based)
   const urlCheckResult = checkSuspiciousURL(currentDomain);
+  
+  const domainAgeResult = await checkDomainAge(currentDomain); // WHOIS domain age lookup
 
   domainResult = {
     domain: currentDomain,
     ageInDays: domainAgeResult.ageInDays || null,
     registrar: domainAgeResult.registrar || null,
-    isSuspicious: urlCheckResult.isSuspicious || (domainAgeResult.isSuspicious || false),
+    isSuspicious: 
+      urlCheckResult.isSuspicious || 
+      (domainAgeResult.isSuspicious || false),
     signals: [
       ...(domainAgeResult.signals || []),
       ...(urlCheckResult.signal ? [urlCheckResult.signal] : []),
