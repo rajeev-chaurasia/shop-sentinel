@@ -103,18 +103,29 @@ export class RiskCalculator {
       console.log(`[DEBUG] Calculated trustFactor: ${trustFactor}`);
       
       // Apply category-specific dampeners based on trust
+      // CRITICAL: Check if this is a phishing site (3+ year old with NO social media)
+      const isPhishingSuspect = domainAgeInDays > 1095 && socialMediaCount === 0;
+      
       // High trust (>0.8): Legitimacy & policy heavily dampened, Dark patterns moderately dampened
-      if (trustFactor > 0.8) {
+      if (trustFactor > 0.8 && !isPhishingSuspect) {
         legitimacyDampener = 0.1;  // 90% reduction for missing socials on Amazon
         policyDampener = 0.5;      // 50% reduction for policy issues
         darkPatternDampener = 0.3; // 70% reduction - established retailers use marketing tactics
         console.log(`[Trust Factor] HIGH (${trustFactor.toFixed(2)}) → Dampeners: legit=${legitimacyDampener}, policy=${policyDampener}, darkPattern=${darkPatternDampener}`);
       }
       // Medium trust (>0.6): Legitimacy dampened, dark patterns slightly dampened
-      else if (trustFactor > 0.6) {
+      else if (trustFactor > 0.6 && !isPhishingSuspect) {
         legitimacyDampener = 0.5;  // 50% reduction
         darkPatternDampener = 0.6; // 40% reduction - established sites less likely to be malicious
         console.log(`[Trust Factor] MEDIUM (${trustFactor.toFixed(2)}) → Dampeners: legit=${legitimacyDampener}, darkPattern=${darkPatternDampener}`);
+      }
+      // PHISHING ALERT: 3+ year domain with NO social media = likely impersonation
+      else if (isPhishingSuspect) {
+        // AMPLIFY the signals for phishing sites - trust dampening makes them WORSE
+        legitimacyDampener = 2.0;  // 200% AMPLIFICATION - missing socials on old domain is RED FLAG
+        darkPatternDampener = 1.5; // 150% AMPLIFICATION - combine with dark patterns
+        policyDampener = 1.5;      // 150% AMPLIFICATION
+        console.log(`🚨 [PHISHING ALERT] ${domainAgeInDays}d old domain with ZERO social media → AMPLIFYING signals (legit=${legitimacyDampener}, darkPattern=${darkPatternDampener}, policy=${policyDampener})`);
       }
       // Low trust: all dampeners stay 1.0 (no dampening) - suspicious sites flagged at full severity
       else {

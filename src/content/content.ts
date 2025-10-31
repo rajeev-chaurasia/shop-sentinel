@@ -5,6 +5,8 @@ import { AIService } from '../services/ai';
 import { RiskCalculator } from '../services/riskCalculator';
 import { crossTabSync } from '../services/crossTabSync';
 import { PolicyDetectionService } from '../services/policyDetection';
+import { enhanceDomainAnalysisWithAI } from '../services/aiDomainAnalyzer';
+import { seedImpersonationPatterns } from '../services/impersonationPatterns';
 import { getApiUrl } from '../config/env';
 
 console.log('🛡️ Shop Sentinel content script loaded on:', window.location.href);
@@ -296,6 +298,14 @@ async function handleAnalyzePage(payload: any) {
   const { StorageService } = await import('../services/storage');
   
   try {
+    // Seed impersonation patterns for RAG analysis (idempotent, safe to call repeatedly)
+    try {
+      await seedImpersonationPatterns();
+      console.log('✅ Impersonation patterns seeded for RAG');
+    } catch (seedError) {
+      console.warn('⚠️ Failed to seed impersonation patterns (non-fatal):', seedError);
+    }
+    
     // Detect page type with confidence scoring
     const pageTypeResult = detectPageType();
     const pageType = pageTypeResult.type;
@@ -411,8 +421,14 @@ async function handleAnalyzePage(payload: any) {
     const aiAvailable = await AIService.checkAvailability();
     console.log(`🤖 AI Available: ${aiAvailable}`);
     
-    // Run heuristic checks in parallel for better performance
-    console.log('🔍 Running heuristic analysis...');
+    // ========================================================================
+    // PHASE 1: HEURISTIC ANALYSIS (Immediate, parallel)
+    // ========================================================================
+    console.log(`\n⏱️  [${"═".repeat(35)}]`);
+    console.log(`� PHASE 1: HEURISTIC ANALYSIS (fast, always available)`);
+    console.log(`⏱️  [${"═".repeat(35)}]`);
+    
+    const phase1Start = performance.now();
     const [
       { security, domain, payment },
       { contact, policies }
@@ -420,6 +436,7 @@ async function handleAnalyzePage(payload: any) {
       runDomainSecurityChecks(),
       runContentPolicyChecks()
     ]);
+    const phase1Duration = performance.now() - phase1Start;
     
     // Update backend job: heuristics complete (30% progress)
     await updateBackendJobProgress(30, 'heuristics', {
@@ -428,7 +445,7 @@ async function handleAnalyzePage(payload: any) {
       hasDomainIssues: domain.signals.length > 0,
     });
 
-    // Send partial result after heuristic analysis
+    // Collect heuristic signals
     const heuristicSignals = [
       ...security.signals,
       ...domain.signals,
@@ -437,7 +454,15 @@ async function handleAnalyzePage(payload: any) {
       ...policies.signals,
     ];
     
+    console.log(`✅ PHASE 1 COMPLETE in ${phase1Duration.toFixed(0)}ms`);
+    console.log(`   Security signals: ${security.signals.length}`);
+    console.log(`   Domain signals: ${domain.signals.length}`);
+    console.log(`   Total heuristic signals: ${heuristicSignals.length}`);
+    console.log(`   Phishing check: domain age=${domain.ageInDays}d, social media=${contact.socialMediaProfiles.length}`);
+    
     const heuristicRiskAnalysis = RiskCalculator.calculateScore(heuristicSignals, domain?.ageInDays || null, contact);
+    console.log(`   Heuristic risk score: ${heuristicRiskAnalysis.totalScore}/100 (${heuristicRiskAnalysis.riskLevel})\n`);
+    
     await sendPartialResult({
       security,
       domain,
@@ -453,8 +478,11 @@ async function handleAnalyzePage(payload: any) {
       aiSignalsCount: 0,
       offlineMode: !aiAvailable,
     }, 'heuristic');
-
-    // Step 2: For each detected pattern, get AI explanation and add to RiskSignal
+    // ========================================================================
+    // PHASE 2: AI INITIALIZATION (downloads model, creates session)
+    // PHASE 3: AI-POWERED ANALYSIS (dark patterns + legitimacy)
+    // PHASE 4: SECONDARY DOMAIN AI ENHANCEMENT
+    // ========================================================================
     
     let aiSignals: any[] = [];
     let aiAnalysisTime = 0;
@@ -465,17 +493,60 @@ async function handleAnalyzePage(payload: any) {
                         pageType !== 'other';
     
     if (shouldRunAI) {
-      console.log(`🤖 Running AI-powered analysis for ${pageType} page...`);
+      console.log(`\n⏱️  [${"═".repeat(35)}]`);
+      console.log(`📍 PHASE 2: AI INITIALIZATION`);
+      console.log(`⏱️  [${"═".repeat(35)}]`);
+      
+      const phase2Start = performance.now();
       const aiStartTime = performance.now();
 
       try {
         // Initialize session first (will reuse if already exists)
         const initialized = await AIService.initializeSession();
+        
+        const phase2Duration = performance.now() - phase2Start;
 
         if (!initialized) {
-          console.warn('⚠️ AI session failed to initialize, skipping AI analysis');
+          console.warn(`⚠️ PHASE 2 FAILED: AI session initialization failed`);
           aiAnalysisTime = performance.now() - aiStartTime;
         } else {
+          console.log(`✅ PHASE 2 COMPLETE in ${phase2Duration.toFixed(0)}ms (Gemini Nano ready)\n`);
+          
+          console.log(`⏱️  [${"═".repeat(35)}]`);
+          console.log(`📍 PHASE 3: SEQUENTIAL AI ANALYSIS (domain → dark patterns → legitimacy)`);
+          console.log(`⏱️  [${"═".repeat(35)}]`);
+          
+          // ========================================================================
+          // PHASE 3a: DOMAIN AI ENHANCEMENT (FIRST - before other AI tasks)
+          // ========================================================================
+          console.log(`\n   [3a] Domain AI Enhancement (semantic impersonation)`);
+          const phase3aStart = performance.now();
+          try {
+            const domainSignal = await enhanceDomainAnalysisWithAI(window.location.hostname, {
+              domain,
+              contact,
+              security,
+              policies,
+            });
+            const phase3aDuration = performance.now() - phase3aStart;
+            
+            if (domainSignal) {
+              console.log(`   ✅ [3a] COMPLETE in ${phase3aDuration.toFixed(0)}ms (1 signal)`);
+              aiSignals.push(domainSignal);
+            } else {
+              console.log(`   ✅ [3a] COMPLETE in ${phase3aDuration.toFixed(0)}ms (0 signals)`);
+            }
+          } catch (domainAIError) {
+            console.warn(`   ⚠️ [3a] ERROR:`, domainAIError);
+            // Continue to next AI task
+          }
+          
+          // ========================================================================
+          // PHASE 3b: DARK PATTERNS ANALYSIS (SECOND - after domain)
+          // ========================================================================
+          console.log(`\n   [3b] Dark Patterns Analysis`);
+          const phase3bStart = performance.now();
+          
           // Extract page content for AI analysis
           const pageContent = {
             url: window.location.href,
@@ -485,27 +556,37 @@ async function handleAnalyzePage(payload: any) {
             headings: Array.from(document.querySelectorAll('h1, h2, h3'))
               .map(el => el.textContent?.trim() || '')
               .filter(text => text.length > 0)
-              .slice(0, 10), // Limit to reduce token usage
+              .slice(0, 10),
             buttons: Array.from(document.querySelectorAll('button, a.btn, input[type="submit"]'))
               .map(el => el.textContent?.trim() || (el as HTMLInputElement).value || '')
               .filter(text => text.length > 0)
-              .slice(0, 20), // Limit to reduce token usage
+              .slice(0, 20),
             forms: Array.from(document.querySelectorAll('form'))
               .map(form => form.id || form.className || 'form')
               .filter(text => text.length > 0)
               .slice(0, 5),
           };
-
-          const pageText = document.body.innerText || '';
-
-          // Context-aware AI analysis based on page type
-          const analyses: { name: string, promise: Promise<any[]> }[] = [];
-
-          // Analyze dark patterns with page context
-          analyses.push({ name: 'darkPatterns', promise: AIService.analyzeDarkPatterns(pageContent) });
-
-          // Legitimacy check only on pages where it matters - with full context
+          
+          try {
+            const darkPatternSignals = await AIService.analyzeDarkPatterns(pageContent);
+            const phase3bDuration = performance.now() - phase3bStart;
+            console.log(`   ✅ [3b] COMPLETE in ${phase3bDuration.toFixed(0)}ms (${darkPatternSignals.length} signals)`);
+            aiSignals.push(...darkPatternSignals);
+          } catch (darkPatternsError) {
+            console.warn(`   ⚠️ [3b] ERROR:`, darkPatternsError);
+            // Continue to next AI task
+          }
+          
+          // ========================================================================
+          // PHASE 3c: LEGITIMACY ANALYSIS (THIRD - after dark patterns)
+          // ========================================================================
+          console.log(`\n   [3c] Legitimacy Analysis`);
+          const phase3cStart = performance.now();
+          
+          // Only run legitimacy on certain page types
           if (pageType === 'product' || pageType === 'checkout' || pageType === 'home') {
+            const pageText = document.body.innerText || '';
+            
             // Extract social media data from profiles
             const socialMediaData = {
               facebook: contact.socialMediaProfiles.find(p => p.platform === 'facebook')?.url || null,
@@ -516,9 +597,16 @@ async function handleAnalyzePage(payload: any) {
               count: contact.socialMediaProfiles.length,
             };
 
-            analyses.push({
-              name: 'legitimacy',
-              promise: AIService.analyzeLegitimacy({
+            console.log('   🧠 AI Context:', {
+              domainAge: domain.ageInDays ? `${domain.ageInDays} days` : 'Unknown',
+              registrar: domain.registrar || 'Unknown',
+              protectionFlags: domain.status?.length || 0,
+              socialMediaCount: socialMediaData.count,
+              hasContact: contact.hasContactPage || contact.hasEmail || contact.hasPhoneNumber,
+            });
+            
+            try {
+              const legitimacySignals = await AIService.analyzeLegitimacy({
                 url: window.location.href,
                 title: document.title,
                 content: pageText.slice(0, 1500),
@@ -532,33 +620,43 @@ async function handleAnalyzePage(payload: any) {
                 domainAgeYears: domain.ageInDays ? Math.floor(domain.ageInDays / 365) : null,
                 domainStatus: domain.status,
                 domainRegistrar: domain.registrar,
-              })
-            });
-
-            console.log('🧠 AI Context:', {
-              domainAge: domain.ageInDays ? `${domain.ageInDays} days` : 'Unknown',
-              registrar: domain.registrar || 'Unknown',
-              protectionFlags: domain.status?.length || 0,
-              socialMediaCount: socialMediaData.count,
-              hasContact: contact.hasContactPage || contact.hasEmail || contact.hasPhoneNumber,
-            });
+              });
+              const phase3cDuration = performance.now() - phase3cStart;
+              console.log(`   ✅ [3c] COMPLETE in ${phase3cDuration.toFixed(0)}ms (${legitimacySignals.length} signals)`);
+              aiSignals.push(...legitimacySignals);
+            } catch (legitimacyError) {
+              console.warn(`   ⚠️ [3c] ERROR:`, legitimacyError);
+            }
+          } else {
+            console.log(`   ⏭️  [3c] SKIPPED (not applicable for ${pageType} pages)`);
           }
-
-          // Run selected analyses in parallel and log timing for each
-          const analysisStartTimes = analyses.map(() => performance.now());
-          const results = await Promise.all(
-            analyses.map(({ promise }, i) =>
-              promise.then(res => {
-                const elapsed = performance.now() - analysisStartTimes[i];
-                console.log(`⏱️ ${analyses[i].name} analysis finished in ${elapsed.toFixed(0)}ms`);
-                return res;
-              })
-            )
-          );
-          aiSignals = results.flat();
-
+          
           aiAnalysisTime = performance.now() - aiStartTime;
-          console.log(`✅ AI found ${aiSignals.length} signals in ${aiAnalysisTime.toFixed(0)}ms (parallel)`);
+          console.log(`\n✅ PHASE 3 COMPLETE in ${aiAnalysisTime.toFixed(0)}ms (sequential)`);
+          console.log(`   AI signals collected: ${aiSignals.length}\n`);
+          
+          // ========================================================================
+          // PHASE 4: SIGNAL CONSOLIDATION & SCORE CALCULATION
+          // ========================================================================
+          console.log(`⏱️  [${"═".repeat(35)}]`);
+          console.log(`📍 PHASE 4: SIGNAL CONSOLIDATION & SCORE CALCULATION`);
+          console.log(`⏱️  [${"═".repeat(35)}]`);
+          
+          const phase4Start = performance.now();
+          
+          const allSignalsWithAI = [...heuristicSignals, ...aiSignals];
+          console.log(`   Consolidating signals:`);
+          console.log(`   - Heuristic signals: ${heuristicSignals.length}`);
+          console.log(`   - AI signals (Phase 3): ${aiSignals.length}`);
+          console.log(`   - Total signals: ${allSignalsWithAI.length}`);
+          
+          const aiRiskAnalysis = RiskCalculator.calculateScore(allSignalsWithAI, domain?.ageInDays || null, contact);
+          
+          const phase4Duration = performance.now() - phase4Start;
+          console.log(`✅ PHASE 4 COMPLETE in ${phase4Duration.toFixed(0)}ms`);
+          console.log(`   Final risk score: ${aiRiskAnalysis.totalScore}/100`);
+          console.log(`   Risk level: ${aiRiskAnalysis.riskLevel}`);
+          console.log(`   Top concerns: ${aiRiskAnalysis.topConcerns?.slice(0,2).map(c => c.reason).join(', ') || 'None'}\n`);
           
           // Update backend job: AI analysis complete (65% progress)
           await updateBackendJobProgress(65, 'ai_analysis', {
@@ -567,8 +665,6 @@ async function handleAnalyzePage(payload: any) {
           });
           
           // Send partial result after AI analysis
-          const allSignalsWithAI = [...heuristicSignals, ...aiSignals];
-          const aiRiskAnalysis = RiskCalculator.calculateScore(allSignalsWithAI, domain?.ageInDays || null, contact);
           await sendPartialResult({
             security,
             domain,
@@ -601,7 +697,7 @@ async function handleAnalyzePage(payload: any) {
                      pageType === 'policy' ? 'policy page' :
                      pageType === 'other' ? 'unknown page type' :
                      'AI disabled';
-      console.log(`⏭️ Skipping AI analysis: ${reason}`);
+      console.log(`⏭️ Skipping Phases 2-5: ${reason}`);
     }
     
     // Collect all signals (heuristics + AI)

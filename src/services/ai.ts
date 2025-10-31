@@ -284,6 +284,180 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
     }
 
     /**
+     * Send a custom prompt using the persistent AI session
+     * Used by RAG-based analysis functions
+     */
+    static async promptWithSession(prompt: string): Promise<string | null> {
+        try {
+            if (!this.session) {
+                console.warn('⚠️ AI session not available');
+                return null;
+            }
+
+            return await this.session.prompt(prompt);
+        } catch (error) {
+            console.warn('⚠️ Error sending prompt to AI session:', error);
+            return null;
+        }
+    }
+
+    /**
+     * Analyze domain for impersonation and phishing using the persistent AI session
+     * Uses existing session to avoid session conflicts
+     * Incorporates trust signals to improve accuracy
+     */
+    static async analyzeDomain(
+        domain: string,
+        context?: {
+            domain?: any;
+            contact?: any;
+            security?: any;
+            policies?: any;
+        }
+    ): Promise<RiskSignal | null> {
+        try {
+            // If no session, AI is not available
+            if (!this.session) {
+                console.log(`🤖 [AI Domain] AI session not available`);
+                return null;
+            }
+
+            console.log(`🤖 [AI Domain] Analyzing domain with AI: "${domain}"`);
+
+            // Build context for the AI
+            const trustSignals = context ? {
+                domainAge: context.domain?.ageInDays ? `${context.domain.ageInDays} days` : 'unknown',
+                hasEmail: context.contact?.hasEmail,
+                hasPhone: context.contact?.hasPhoneNumber,
+                hasAddress: context.contact?.hasPhysicalAddress,
+                hasSocialMedia: (context.contact?.socialMediaProfiles?.length || 0) > 0,
+                socialMediaCount: context.contact?.socialMediaProfiles?.length || 0,
+                isHttps: context.security?.isHttps,
+                hasPrivacyPolicy: context.policies?.hasPrivacyPolicy,
+                hasReturnPolicy: context.policies?.hasReturnRefundPolicy,
+            } : null;
+
+            // Enhanced prompt with context
+            let prompt = `You are a cybersecurity expert. Analyze this domain for phishing and impersonation: "${domain}"
+
+IMPORTANT: Use context to determine if this is a LEGITIMATE business or SUSPICIOUS impersonation:
+- Legitimate businesses have: email, phone, address, social media, HTTPS, clear policies
+- Suspicious domains often LACK these trust signals OR mimic established brands`;
+
+            if (trustSignals) {
+                prompt += `
+
+TRUST SIGNALS FOUND:
+- Domain age: ${trustSignals.domainAge}
+- Has email: ${trustSignals.hasEmail}
+- Has phone: ${trustSignals.hasPhone}
+- Has address: ${trustSignals.hasAddress}
+- Social media: ${trustSignals.socialMediaCount} profiles
+- HTTPS: ${trustSignals.isHttps}
+- Privacy policy: ${trustSignals.hasPrivacyPolicy}
+- Return policy: ${trustSignals.hasReturnPolicy}
+
+GUIDELINES:
+- If domain is 3+ years old WITH social media and contact info → likely LEGITIMATE (low risk)
+- If domain mimics a well-known brand name → check if it's the REAL brand domain
+- If domain has few/no trust signals AND looks like brand typo → SUSPICIOUS (impersonation)
+- Factor in: Are the trust signals consistent with a real business or a scam?`;
+            }
+
+            prompt += `
+
+Identify impersonation by checking:
+1. Does it closely mimic a known, legitimate brand? (typosquatting, character substitution)
+2. Are the trust signals inconsistent? (e.g., claims to be "official" but no contact info)
+3. Does the domain structure look designed to deceive? (excessive hyphens, confusing characters)
+
+CRITICAL: Only report impersonation if the domain appears to be MIMICKING a legitimate brand.
+Do NOT report a legitimate business (even if newer or smaller) as impersonation just because it has a similar name.
+
+Return ONLY valid JSON object (not array), no markdown:
+{
+  "mightImpersonate": "brand_name or null",
+  "suspiciousPatterns": ["pattern1", "pattern2"],
+  "riskLevel": "low|medium|high",
+  "confidence": 0-100,
+  "reasoning": "brief explanation considering context"
+}`;
+
+            const response = await this.session.prompt(prompt);
+            console.log(`🤖 [AI Domain] Response:`, response);
+
+            // Parse response as JSON object (not array)
+            try {
+                let parsed: any;
+                try {
+                    parsed = JSON.parse(response);
+                } catch {
+                    // Try to extract JSON from response
+                    const jsonMatch = response.match(/\{[\s\S]*\}/);
+                    if (jsonMatch) {
+                        parsed = JSON.parse(jsonMatch[0]);
+                    } else {
+                        throw new Error('No JSON found');
+                    }
+                }
+                
+                const riskLevel = parsed.riskLevel || 'low';
+                
+                // Flag 1: Direct impersonation detected
+                if (parsed.mightImpersonate) {
+                    const signal: RiskSignal = {
+                        id: `ai-domain-impersonation-${Date.now()}`,
+                        score: riskLevel === 'high' ? 15 : riskLevel === 'medium' ? 10 : 5,
+                        reason: `AI detected potential impersonation: ${parsed.mightImpersonate}`,
+                        severity: riskLevel as 'low' | 'medium' | 'high',
+                        category: 'security' as const,
+                        source: 'ai' as const,
+                        details: parsed.reasoning || parsed.suspiciousPatterns?.join(', '),
+                    };
+                    console.log(`🤖 [AI Domain] Signal generated (impersonation):`, signal);
+                    return signal;
+                }
+                
+                // Flag 2: Medium/High risk with missing trust signals (suspicious but not confirmed impersonation)
+                // This catches phishing/scam attempts that don't mimic a specific brand
+                if (riskLevel === 'medium' || riskLevel === 'high') {
+                    const hasMissingTrustSignals = parsed.suspiciousPatterns?.some((p: string) => 
+                        p.toLowerCase().includes('missing') || 
+                        p.toLowerCase().includes('absence') || 
+                        p.toLowerCase().includes('lack') ||
+                        p.toLowerCase().includes('no email') ||
+                        p.toLowerCase().includes('no phone') ||
+                        p.toLowerCase().includes('no social')
+                    );
+                    
+                    if (hasMissingTrustSignals) {
+                        const signal: RiskSignal = {
+                            id: `ai-domain-suspicious-${Date.now()}`,
+                            score: riskLevel === 'high' ? 12 : 8,
+                            reason: `AI flagged suspicious domain: Missing trust signals (no contact info/social media)`,
+                            severity: riskLevel as 'low' | 'medium' | 'high',
+                            category: 'security' as const,
+                            source: 'ai' as const,
+                            details: parsed.reasoning || parsed.suspiciousPatterns?.join(', '),
+                        };
+                        console.log(`🤖 [AI Domain] Signal generated (suspicious):`, signal);
+                        return signal;
+                    }
+                }
+                
+                console.log(`🤖 [AI Domain] No impersonation or suspicious activity detected`);
+                return null;
+            } catch (parseError) {
+                console.warn(`⚠️ [AI Domain] Failed to parse response:`, parseError);
+                return null;
+            }
+        } catch (error) {
+            console.error(`❌ [AI Domain] Error analyzing domain:`, error);
+            return null;
+        }
+    }
+
+    /**
      * Analyze text for dark patterns
      */
     static async analyzeDarkPatterns(pageContent: {
@@ -650,73 +824,69 @@ JSON only, no markdown.`;
                 return JSON.parse(cleaned);
             } catch {
                 // If that fails, try to extract JSON
-                const jsonMatch = cleaned.match(/\[[\s\S]*\]|\{[\s\S]*\}/);
-                if (jsonMatch) {
-                    let extracted = jsonMatch[0];
-
-                    // Fix common JSON issues
-                    // 1. Fix unescaped quotes inside string values
-                    // Match pattern: "key": "value with " unescaped quotes"
-                    extracted = extracted.replace(/"([^"]*)":\s*"([^"]*)"/g, (_match, key, value) => {
-                        // Escape any unescaped quotes within the value
-                        const escapedValue = value.replace(/"/g, '\\"');
-                        return `"${key}": "${escapedValue}"`;
-                    });
-                    
-                    // 2. Remove trailing commas before closing brackets
-                    extracted = extracted.replace(/,(\s*[}\]])/g, '$1');
-                    // 3. Fix unquoted keys (basic attempt)
-                    extracted = extracted.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
-                    
-                    // Handle truncated JSON - try to close incomplete objects/arrays
-                    if (extracted.includes('{') && !extracted.endsWith('}') && !extracted.endsWith(']')) {
-                        // Check if we're inside an incomplete string (odd number of quotes after last colon)
-                        const lastColonIndex = extracted.lastIndexOf(':');
-                        const afterLastColon = extracted.substring(lastColonIndex);
-                        const quotesAfterColon = (afterLastColon.match(/"/g) || []).length;
-                        
-                        // If odd number of quotes, we're inside an incomplete string - close it
-                        if (quotesAfterColon % 2 !== 0) {
-                            extracted += '"';
-                        }
-                        
-                        // Remove any trailing incomplete content after last complete object
-                        // Look for last complete property (ends with " or } or ])
-                        const lastCompleteMatch = extracted.match(/["\}\]]\s*$/);
-                        if (!lastCompleteMatch) {
-                            // Find the last comma, closing brace, or opening brace before truncation
-                            const lastSafeIndex = Math.max(
-                                extracted.lastIndexOf('",'),
-                                extracted.lastIndexOf('},'),
-                                extracted.lastIndexOf('"}'),
-                                extracted.lastIndexOf(']')
-                            );
-                            
-                            if (lastSafeIndex > 0) {
-                                // Truncate to last safe point
-                                extracted = extracted.substring(0, lastSafeIndex + 1);
-                            }
-                        }
-                        
-                        // Count open vs closed braces
-                        const openBraces = (extracted.match(/\{/g) || []).length;
-                        const closeBraces = (extracted.match(/\}/g) || []).length;
-                        const openBrackets = (extracted.match(/\[/g) || []).length;
-                        const closeBrackets = (extracted.match(/\]/g) || []).length;
-                        
-                        // Try to close missing braces/brackets
-                        for (let i = 0; i < (openBraces - closeBraces); i++) {
-                            extracted += '}';
-                        }
-                        for (let i = 0; i < (openBrackets - closeBrackets); i++) {
-                            extracted += ']';
-                        }
-                        
-                        console.warn('⚠️ Attempted to fix truncated JSON response');
-                    }
-
-                    return JSON.parse(extracted);
+                let extracted = cleaned.match(/\[[\s\S]*\]|\{[\s\S]*\}/)?.[0];
+                
+                if (!extracted) {
+                    console.warn('⚠️ No JSON structure found in response');
+                    return [];
                 }
+
+                // ROBUST FIX: Handle unescaped quotes inside string values
+                // Replace unescaped quotes that appear between colons and commas/closing brackets
+                // Example: "reason": "text with "quotes" inside" → "reason": "text with \"quotes\" inside"
+                extracted = extracted.replace(/: "([^"]*(?:\\"[^"]*)*)"(?=[,}\]])/g, (match) => {
+                    // Get the string content (between first and last quote)
+                    const stringContent = match.slice(3, -1); // Remove ': "' and last '"'
+                    // Escape any unescaped quotes
+                    const fixed = stringContent.replace(/(?<!\\)"/g, '\\"');
+                    return `: "${fixed}"`;
+                });
+                
+                // Additional fix for values with mixed quotes
+                // This handles cases like: "reason": "...text with \"escaped\" and "unescaped" quotes..."
+                extracted = extracted.replace(/: "([^"]*(?:\\"[^"]*)*)"(?=[,}\]])/g, (match) => {
+                    const start = match.indexOf('"') + 1; // Position after opening "
+                    const stringContent = match.substring(start, match.lastIndexOf('"'));
+                    // Replace unescaped quotes with escaped quotes, but be careful not to double-escape
+                    const fixed = stringContent.replace(/(?<!\\)"/g, '\\"');
+                    return `: "${fixed}"`;
+                });
+                
+                // 2. Remove trailing commas before closing brackets
+                extracted = extracted.replace(/,(\s*[}\]])/g, '$1');
+                
+                // 3. Fix unquoted keys (basic attempt)
+                extracted = extracted.replace(/([{,]\s*)([a-zA-Z_][a-zA-Z0-9_]*)\s*:/g, '$1"$2":');
+                
+                // Handle truncated JSON - try to close incomplete objects/arrays
+                if (extracted.includes('{') && !extracted.endsWith('}') && !extracted.endsWith(']')) {
+                    const lastColonIndex = extracted.lastIndexOf(':');
+                    const afterLastColon = extracted.substring(lastColonIndex);
+                    const quotesAfterColon = (afterLastColon.match(/"/g) || []).length;
+                    
+                    // If odd number of quotes, we're inside an incomplete string - close it
+                    if (quotesAfterColon % 2 !== 0) {
+                        extracted += '"';
+                    }
+                    
+                    // Count open vs closed braces
+                    const openBraces = (extracted.match(/\{/g) || []).length;
+                    const closeBraces = (extracted.match(/\}/g) || []).length;
+                    const openBrackets = (extracted.match(/\[/g) || []).length;
+                    const closeBrackets = (extracted.match(/\]/g) || []).length;
+                    
+                    // Try to close missing braces/brackets
+                    for (let i = 0; i < (openBraces - closeBraces); i++) {
+                        extracted += '}';
+                    }
+                    for (let i = 0; i < (openBrackets - closeBrackets); i++) {
+                        extracted += ']';
+                    }
+                    
+                    console.warn('⚠️ Attempted to fix truncated JSON response');
+                }
+
+                return JSON.parse(extracted);
             }
 
             // If no JSON found, return empty array
