@@ -54,7 +54,6 @@ export class PageAnalyzer {
     url: string,
     options: {
       includeAI?: boolean;
-      includeWhois?: boolean;
       forceRefresh?: boolean;
       timeout?: number;
     } = {}
@@ -86,10 +85,10 @@ export class PageAnalyzer {
       await StorageService.setAnalysisInProgress(url, pageTypeResult.type, options.includeAI !== false);
 
       // Phase 3: Parallel Heuristic Analysis
-      const heuristicResults = await this.runHeuristicAnalysis(options.includeWhois);
+      const heuristicResults = await this.runHeuristicAnalysis();
       
       // Phase 4: AI Analysis (if enabled and applicable)
-      const aiResults = await this.runAIAnalysis(pageTypeResult, heuristicResults, options.includeAI, options.includeWhois);
+      const aiResults = await this.runAIAnalysis(pageTypeResult, heuristicResults, options.includeAI);
       
       // Phase 5: Fingerprint Analysis
       const fingerprintResults = await this.runFingerprintAnalysis(url);
@@ -357,12 +356,12 @@ export class PageAnalyzer {
   /**
    * Run all heuristic checks in parallel for optimal performance
    */
-  private async runHeuristicAnalysis(includeWhois: boolean = false) {
+  private async runHeuristicAnalysis() {
     console.log('🔍 Running parallel heuristic analysis...');
     
     try {
       const [domainSecurityResults, contentPolicyResults] = await Promise.all([
-        runDomainSecurityChecks(includeWhois),
+        runDomainSecurityChecks(),
         runContentPolicyChecks()
       ]);
       
@@ -398,8 +397,7 @@ export class PageAnalyzer {
   private async runAIAnalysis(
     pageType: PageTypeResult, 
     heuristics: any, 
-    includeAI?: boolean,
-    includeWhois?: boolean
+    includeAI?: boolean
   ) {
     const aiResults = {
       signals: [] as any[],
@@ -446,11 +444,30 @@ export class PageAnalyzer {
       
       // Run AI analyses in parallel
       const analyses: Promise<any[]>[] = [];
-      analyses.push(AIService.analyzeDarkPatterns(pageContent));
+      
+      // Calculate trust factor for AI context (domain age based)
+      const domainAgeInDays = heuristics.domain.ageInDays;
+      let ageScore = 0;
+      if (domainAgeInDays === null) {
+        ageScore = 0.1;
+      } else if (domainAgeInDays < 180) {
+        ageScore = 0.0;
+      } else if (domainAgeInDays < 1095) {
+        ageScore = 0.5;
+      } else if (domainAgeInDays < 3650) {
+        ageScore = 0.8;
+      } else {
+        ageScore = 1.0;
+      }
+      const trustFactor = ageScore * 0.8 + 0.1 * 0.2; // 80% age + 20% avg visit (no visits tracked)
+      
+      // Dark pattern analysis with trust context
+      const darkPatternContext = { ...pageContent, trustFactor };
+      analyses.push(AIService.analyzeDarkPatterns(darkPatternContext));
       
       // Context-aware legitimacy analysis
       if (['product', 'checkout', 'home'].includes(pageType.type)) {
-        const legitimacyContext = this.prepareLegitimacyContext(heuristics, includeWhois);
+        const legitimacyContext = this.prepareLegitimacyContext(heuristics);
         analyses.push(AIService.analyzeLegitimacy(legitimacyContext));
       }
       
@@ -519,11 +536,8 @@ export class PageAnalyzer {
       ...data.fingerprint.signals,
     ];
     
-    // Calculate risk score using smart calculator
-    const riskAnalysis = RiskCalculator.calculateScore(allSignals);
-    
-    // Build comprehensive analysis result
-    const result: AnalysisResult = {
+    // Build initial result structure for context-aware scoring
+    const preliminaryResult: AnalysisResult = {
       url: data.url,
       timestamp: Date.now(),
       pageType: data.pageType.type,
@@ -533,15 +547,30 @@ export class PageAnalyzer {
       payment: data.heuristics.payment,
       contact: data.heuristics.contact,
       policies: data.heuristics.policies,
-      totalRiskScore: riskAnalysis.totalScore,
-      riskLevel: riskAnalysis.riskLevel,
-      allSignals,
-      riskBreakdown: riskAnalysis.breakdown,
-      topConcerns: riskAnalysis.topConcerns,
+      totalRiskScore: 0, // Will be calculated
+      riskLevel: 'low',
+      allSignals: [],
+      riskBreakdown: { security: { score: 0, percentage: 0, signals: [] }, legitimacy: { score: 0, percentage: 0, signals: [] }, darkPattern: { score: 0, percentage: 0, signals: [] }, policy: { score: 0, percentage: 0, signals: [] } },
+      topConcerns: [],
       analysisVersion: '2.0.0',
       isEcommerceSite: true,
       aiEnabled: !data.ai.error,
       aiSignalsCount: data.ai.signals.length,
+      domainAgeInDays: data.heuristics.domain.ageInDays, // Add BEFORE scoring for trust calculation!
+    };
+    
+    // Calculate risk score with context-aware intelligent scoring
+    const riskAnalysis = RiskCalculator.calculateScoreWithContext(allSignals, preliminaryResult);
+    
+    // Build comprehensive analysis result with final scores
+    const result: AnalysisResult = {
+      ...preliminaryResult,
+      totalRiskScore: riskAnalysis.totalScore,
+      riskLevel: riskAnalysis.riskLevel,
+      allSignals: allSignals,
+      riskBreakdown: riskAnalysis.breakdown,
+      topConcerns: riskAnalysis.topConcerns,
+      trustFactor: riskAnalysis.trustFactor,
     };
     
     return result;
@@ -670,7 +699,7 @@ export class PageAnalyzer {
   /**
    * Prepare legitimacy analysis context with comprehensive data
    */
-  private prepareLegitimacyContext(heuristics: any, includeWhois?: boolean) {
+  private prepareLegitimacyContext(heuristics: any) {
     const pageText = document.body.innerText || '';
     
     // Extract social media data
@@ -682,6 +711,22 @@ export class PageAnalyzer {
       youtube: heuristics.contact.socialMediaProfiles.find((p: any) => p.platform === 'youtube')?.url || null,
       count: heuristics.contact.socialMediaProfiles.length,
     };
+    
+    // Calculate trust factor using domain age
+    const domainAgeInDays = heuristics.domain.ageInDays;
+    let ageScore = 0;
+    if (domainAgeInDays === null) {
+      ageScore = 0.1;
+    } else if (domainAgeInDays < 180) {
+      ageScore = 0.0;
+    } else if (domainAgeInDays < 1095) {
+      ageScore = 0.5;
+    } else if (domainAgeInDays < 3650) {
+      ageScore = 0.8;
+    } else {
+      ageScore = 1.0;
+    }
+    const trustFactor = ageScore * 0.8 + 0.1 * 0.2; // 80% age + 20% avg visit (fixed at 0.1, no tracking)
     
     return {
       url: window.location.href,
@@ -695,7 +740,8 @@ export class PageAnalyzer {
       domainAgeYears: heuristics.domain.ageInDays ? Math.floor(heuristics.domain.ageInDays / 365) : null,
       domainStatus: heuristics.domain.status,
       domainRegistrar: heuristics.domain.registrar,
-      domainCheckEnabled: includeWhois === true,
+      domainCheckEnabled: true,
+      trustFactor: trustFactor,
     };
   }
 

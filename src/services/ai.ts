@@ -292,6 +292,7 @@ Be direct, factual, and focus on consumer protection. Format responses as JSON w
         headings: string[];
         buttons: string[];
         forms: string[];
+        trustFactor?: number;
     }): Promise<RiskSignal[]> {
         try {
             // Check cache first
@@ -333,6 +334,61 @@ Title: ${pageContent.title}
 Headings: ${pageContent.headings.slice(0, 10).join(', ')}
 Buttons: ${pageContent.buttons.slice(0, 15).join(', ')}
 Forms: ${pageContent.forms.slice(0, 5).join(', ')}
+
+Trust Context: Factor=${pageContent.trustFactor !== undefined ? pageContent.trustFactor.toFixed(2) : 'Unknown'}/1.0
+
+⭐ CRITICAL RULES FOR DARK PATTERNS:
+
+RULE 1 - ESTABLISHED RETAILER (trustFactor > 0.8):
+Even established retailers like Amazon/Walmart use marketing tactics (flash sales, urgency, discounts).
+These are NORMAL retail practices, not dark patterns.
+Only flag if DECEPTIVE:
+  - Fake countdown timers (claim 3 items left, then restock)
+  - Bait & switch (advertised product unavailable, forced to buy alternative)
+  - Hidden mandatory fees (not just disclosed shipping)
+  - Trick questions (auto-checked subscriptions)
+Do NOT flag: Flash deals, percentage discounts, "Was" prices, limited-time offers (normal retail)
+
+RULE 2 - NEW/UNKNOWN SITE (trustFactor < 0.5):
+Apply maximum scrutiny. Even normal marketing tactics are suspicious.
+Flag aggressively: ANY urgency pressure, ANY cost opacity, ANY friction to cancel.
+
+RULE 3 - SCORING:
+For ESTABLISHED SITES (trustFactor > 0.8):
+  - False urgency score: max 2-3 (not 5-10)
+  - Bait/switch score: max 2-3 if not severe
+  - Hidden costs: only flag actual hidden fees, NOT shipping disclosure
+For NEW SITES (trustFactor < 0.5):
+  - False urgency score: 8-10 (maximum concern)
+  - Any opacity: score high
+
+RULE 4 - INDUSTRY-SPECIFIC PATTERNS:
+
+E-COMMERCE / RETAIL (indicators: "shop", "cart", "buy", "price", "product", "store"):
+  Do NOT flag as dark patterns:
+  - Flash sales / limited-time offers
+  - Countdown timers showing deal duration
+  - "Limited quantity" messaging
+  - "Was $X now $Y" pricing
+  - "Best seller" or "Popular" badges
+  - Free shipping offers with conditions
+  DO flag as dark patterns:
+  - Product unavailable after ad (forcing alternative purchase)
+  - Out-of-stock items promoted heavily
+  - Shipping cost hidden until final checkout
+  - Quantity limitations not visible upfront
+
+SaaS / SERVICE (indicators: "free trial", "subscribe", "plan", "features", "sign up"):
+  Do NOT flag:
+  - Feature upgrade prompts
+  - "Start free trial" CTAs
+  - Plan comparison displays
+  DO flag as dark patterns:
+  - Free trial auto-converts to paid without warning
+  - Cancel button hidden or hard to find
+  - Auto-renewal without advance reminder
+  - Features marked "Free" but are paid
+  - Difficult multi-step cancellation process
 
 Identify any dark patterns such as:
 - False urgency (fake scarcity, countdown timers)
@@ -413,8 +469,8 @@ No markdown code blocks, no explanations, JSON only.`;
         domainAgeYears?: number | null;
         domainStatus?: string[] | null;
         domainRegistrar?: string | null;
-        // Whether domain checking was enabled by user
-        domainCheckEnabled?: boolean;
+        // Trust factor calculated from domain age
+        trustFactor?: number;
     }): Promise<RiskSignal[]> {
         try {
             // Check cache first
@@ -441,8 +497,6 @@ Domain Protection: ${pageData.domainStatus?.length || 0} status flags${
         ? ` (${pageData.domainStatus.slice(0, 3).join(', ')})`
         : ''
 }`
-                : pageData.domainCheckEnabled === false
-                ? 'ℹ️ DOMAIN CHECK DISABLED - Domain verification was intentionally skipped by user. Do not penalize for missing domain details.'
                 : '⚠️ DOMAIN AGE UNKNOWN - Exercise extra caution! Unable to verify domain registration details. This could indicate a new or suspicious domain.';
 
             const socialInfo = pageData.socialMedia
@@ -488,20 +542,62 @@ ${domainInfo}
 
 📄 Content Sample: ${pageData.content.slice(0, 400)}
 
-⚠️ VIGILANCE PROTOCOL: ${pageData.domainCheckEnabled === false 
-    ? 'Domain checking disabled by user - do not penalize for missing domain details. Evaluate based on available security, contact, and policy information.'
-    : 'If domain age is unknown, significantly increase scrutiny of ALL other factors. Missing domain data often indicates new/suspicious domains that require extra verification.'}
+⚠️ VIGILANCE PROTOCOL: If domain age is unknown, significantly increase scrutiny of ALL other factors. Missing domain data often indicates new/suspicious domains that require extra verification.
 
-⭐ CRITICAL CONTEXT-AWARE RULES:
+⭐ CONTEXT-AWARE RULES (TRUST-BASED):
+
+Trust Factor: ${pageData.trustFactor !== undefined ? pageData.trustFactor.toFixed(2) : 'Unknown'}/1.0
+
+RULE 1 - ESTABLISHED SITE:
+IF domainAge > 1095 days (3+ years) THEN
+  - Don't flag "missing social media" as a concern
+  - Apply 90% dampening to legitimacy concerns like "missing links"
+  - Only flag true security issues
+
+RULE 2 - NEW SITE:
+IF domainAge < 180 days (<6 months) THEN
+  - Apply maximum scrutiny to all signals
+  - Flag ANY missing security features
+  - Missing contact or policies = HIGH severity
+
+RULE 3 - INDUSTRY-SPECIFIC LEGITIMACY REQUIREMENTS:
+
+E-COMMERCE RETAIL (keywords: "shop", "buy", "product", "cart", "price"):
+  Must have:
+  - HTTPS certificate ✓
+  - Contact information ✓
+  - Return policy (if not: score 10)
+  - Refund policy (if not: score 10)
+  - Shipping policy (if not: score 8)
+  Don't require: Extensive social media, "About us" page, customer reviews
+
+SaaS / SERVICES (keywords: "free trial", "subscribe", "plan", "features"):
+  Must have:
+  - HTTPS certificate ✓
+  - Privacy policy (if not: score 25)
+  - Terms of service (if not: score 20)
+  - Contact method ✓
+  - Trial cancellation information (if not: score 15)
+  Don't require: Physical address, return policy, shipping info
+
+CONTENT / PUBLISHING (keywords: "blog", "article", "news", "subscribe"):
+  Must have:
+  - HTTPS certificate ✓
+  - Author/About information
+  - Privacy policy (if not: score 15)
+  - Contact info (if not: score 8)
+  Don't require: Return policies, SaaS-level compliance
+
+ALWAYS RED FLAGS (any site type):
+- No HTTPS (score 25+)
+- Domain expiring very soon (score 30+)
+- Phone number invalid (score 12)
+- All contact methods fake or non-functional (score 20+)
+- No way to contact support (score 15+)
 
 Security: HTTPS=${pageData.hasHTTPS}, Contact=${pageData.hasContactInfo}, Policies=${pageData.hasPolicies}
 Domain: ${domainInfo}
 Social: ${socialInfo}
-
-Context Rules:
-- Old domains (>5yr + 3+ flags): Missing social = LOW concern
-- New domains (<180d + <2 flags): Missing social = HIGH concern
-- Protection flags = trust indicator (0-1=low, 3-5=good, 6=max)
 
 Return JSON array (max 5 concerns, highest severity/score first):
 [{"concern":"name","severity":"low|medium|high","score":1-40,"reason":"why","details":"evidence"}]
