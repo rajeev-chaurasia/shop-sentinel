@@ -30,6 +30,7 @@ function App() {
   
   const [operationLock, setOperationLock] = useState(false);
   const [isCheckingCache, setIsCheckingCache] = useState(false);
+  const [isTransitioningTab, setIsTransitioningTab] = useState(false); // Track tab transitions for smooth UX
   
   const [currentPhase, setCurrentPhase] = useState<PhaseResult | null>(null);
   const [progressPercentage, setProgressPercentage] = useState(0);
@@ -58,6 +59,14 @@ function App() {
   // Determine if we should show offline mode
   // Only show offline mode for final results or when we're sure AI is unavailable
   const showOfflineMode = analysisResult ? !analysisResult.aiEnabled : false;
+
+  // Automatically clear isCheckingCache when results are loaded
+  useEffect(() => {
+    if (analysisResult || partialResult) {
+      setIsCheckingCache(false);
+      setIsTransitioningTab(false);
+    }
+  }, [analysisResult, partialResult]);
 
   // Helper to prevent concurrent operations
   const withOperationLock = async <T,>(operation: () => Promise<T>): Promise<T | null> => {
@@ -99,7 +108,17 @@ function App() {
   // Check if current page is a policy page
   const checkPolicyPage = async () => {
     try {
-      const pageInfo = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
+      const tab = await MessagingService.getActiveTab();
+      
+      // Skip policy check for pages where content scripts can't run
+      if (tab?.url?.startsWith('chrome://')) {
+        setIsPolicyPage(false);
+        setPolicyLegitimacy(null);
+        return;
+      }
+
+      // Use full retries (2) for better resilience during tab switching
+      const pageInfo = await MessagingService.sendToActiveTab('GET_PAGE_INFO', undefined, { retries: 2 });
       if (pageInfo?.data?.isPolicyPage) {
         setIsPolicyPage(true);
         setPolicyLegitimacy(pageInfo.data.policyLegitimacy || null);
@@ -108,7 +127,7 @@ function App() {
         setPolicyLegitimacy(null);
       }
     } catch (error) {
-      console.error('Failed to check policy page:', error);
+      console.warn('⚠️ Failed to check policy page (content script may not be ready):', error);
       setIsPolicyPage(false);
       setPolicyLegitimacy(null);
     }
@@ -174,6 +193,75 @@ function App() {
     }
   }, []);
 
+  // CRITICAL: Detect URL changes and handle transitions gracefully
+  // This runs on popup open and periodically to catch tab switches
+  useEffect(() => {
+    let isMounted = true;
+    const transitionTimeouts: ReturnType<typeof setTimeout>[] = [];
+
+    const checkAndHandleUrlChange = async () => {
+      if (!isMounted) return;
+      
+      try {
+        const tab = await MessagingService.getActiveTab();
+        if (!tab?.url || !isMounted) return;
+
+        // If we have results from a different URL, transition gracefully
+        if (analysisResult || partialResult) {
+          const resultUrl = analysisResult?.url || partialResult?.url;
+          
+          // Check if result URL doesn't match current tab URL
+          if (resultUrl && resultUrl !== tab.url) {
+            console.log(`🔄 Transitioning: URL changed from ${resultUrl} to ${tab.url}`);
+            
+            // Show transition state to user (instead of jarring blank screen)
+            if (isMounted) {
+              setIsTransitioningTab(true);
+              setIsCheckingCache(true);
+            }
+            
+            // Clear old results after a brief delay for visual smoothness
+            const clearTimeout = setTimeout(() => {
+              if (!isMounted) return;
+              setAnalysisResult(null);
+              setPartialResult(null);
+              setError(null);
+              setCurrentPhase(null);
+              setProgressPercentage(0);
+              setActiveTab('overview');
+            }, 300);
+            transitionTimeouts.push(clearTimeout);
+            
+            // Clear transition state after timeout
+            // Note: isCheckingCache will be cleared automatically by useEffect when results load
+            const resetTimeout = setTimeout(() => {
+              if (!isMounted) return;
+              setIsTransitioningTab(false);
+              // If still no results after 2s, clear checking cache state too
+              setIsCheckingCache(false);
+            }, 2000);
+            transitionTimeouts.push(resetTimeout);
+          }
+        }
+      } catch (error) {
+        // Silently continue - expected during page load
+      }
+    };
+
+    // Check on popup open (immediate)
+    checkAndHandleUrlChange();
+
+    // Also check periodically for tab switches while popup is open
+    const interval = setInterval(checkAndHandleUrlChange, 500);
+
+    return () => {
+      isMounted = false;
+      clearInterval(interval);
+      // Clean up all pending timeouts
+      transitionTimeouts.forEach(timeout => clearTimeout(timeout));
+    };
+  }, [analysisResult, partialResult]);
+
   // Poll for results when in loading state (non-blocking, no isUpdating guard)
   useEffect(() => {
     let currentInterval: number | null = null;
@@ -185,21 +273,33 @@ function App() {
           const tab = await MessagingService.getActiveTab();
           if (!tab?.url) return;
 
-          const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
-          if (!pageInfoResponse.success || !pageInfoResponse.data) return;
+          // Skip polling for pages where content scripts can't run
+          if (tab.url.startsWith('chrome://')) return;
 
-          const pageType = pageInfoResponse.data.pageType || 'other';
-          const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
-          if (cached && isValidAnalysisResult(cached)) {
-            setAnalysisResult(cached);
-            updateIconForCachedResult(cached);
-            completeAnalysis();
-            checkPolicyPage();
-            clearInterval(interval);
-            setPollInterval(null);
+          try {
+            const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO', undefined, { retries: 0 });
+            if (!pageInfoResponse.success || !pageInfoResponse.data) return;
+
+            const pageType = pageInfoResponse.data.pageType || 'other';
+            const cached = await StorageService.getCachedAnalysis(tab.url, pageType);
+            if (cached && isValidAnalysisResult(cached)) {
+              setAnalysisResult(cached);
+              updateIconForCachedResult(cached);
+              completeAnalysis();
+              try {
+                await checkPolicyPage();
+              } catch (e) {
+                console.warn('Policy check failed during poll:', e);
+              }
+              clearInterval(interval);
+              setPollInterval(null);
+            }
+          } catch (error) {
+            // Content script not ready yet - continue polling
+            console.debug('Polling - content script not ready yet');
           }
         } catch (error) {
-          console.error('Poll error:', error);
+          console.debug('Poll error (non-fatal):', error);
         }
       }, TIMINGS.POLL_INTERVAL);
 
@@ -247,42 +347,57 @@ function App() {
         try {
           const tab = await MessagingService.getActiveTab();
           if (!tab?.url) return;
-          
-          const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
-          if (!pageInfoResponse.success || !pageInfoResponse.data) return;
-          
-          const pageType = pageInfoResponse.data.pageType || 'other';
-          const domain = new URL(tab.url).hostname.replace(/^www\./, '');
-          const prefix = `analysis_${domain}:${pageType}`; // may include :path suffix
 
-          // Find any changed key for this domain+pageType (path-scoped or not)
-          const relevantKey = Object.keys(changes).find(k => k.startsWith(prefix));
-          if (relevantKey) {
-            const change = changes[relevantKey];
-            if (change && change.newValue) {
-              const cached = change.newValue as any;
-              
-              if (cached.result && cached.expiresAt && Date.now() < cached.expiresAt) {
-                if (isValidAnalysisResult(cached.result)) {
-                  setAnalysisResult(cached.result);
+          // Skip storage change handling for pages where content scripts can't run
+          if (tab.url.startsWith('chrome://')) return;
+          
+          try {
+            const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO', undefined, { retries: 0 });
+            if (!pageInfoResponse.success || !pageInfoResponse.data) return;
+            
+            const pageType = pageInfoResponse.data.pageType || 'other';
+            const domain = new URL(tab.url).hostname.replace(/^www\./, '');
+            const prefix = `analysis_${domain}:${pageType}`; // may include :path suffix
+
+            // Find any changed key for this domain+pageType (path-scoped or not)
+            const relevantKey = Object.keys(changes).find(k => k.startsWith(prefix));
+            if (relevantKey) {
+              const change = changes[relevantKey];
+              if (change && change.newValue) {
+                const cached = change.newValue as any;
+                
+                if (cached.result && cached.expiresAt && Date.now() < cached.expiresAt) {
+                  if (isValidAnalysisResult(cached.result)) {
+                    setAnalysisResult(cached.result);
+                    setIsFromCache(true);
+                    updateIconForCachedResult(cached.result);
+                    showRiskNotification(cached.result);
+                    completeAnalysis();
+                    try {
+                      await checkPolicyPage();
+                    } catch (e) {
+                      console.warn('Policy check failed during storage change:', e);
+                    }
+                  }
+                }
+                else if (isValidAnalysisResult(cached)) {
+                  setAnalysisResult(cached);
                   setIsFromCache(true);
-                  updateIconForCachedResult(cached.result);
-                  showRiskNotification(cached.result);
+                  updateIconForCachedResult(cached);
                   completeAnalysis();
-                  checkPolicyPage();
+                  try {
+                    await checkPolicyPage();
+                  } catch (e) {
+                    console.warn('Policy check failed during storage change:', e);
+                  }
                 }
               }
-              else if (isValidAnalysisResult(cached)) {
-                setAnalysisResult(cached);
-                setIsFromCache(true);
-                updateIconForCachedResult(cached);
-                completeAnalysis();
-                checkPolicyPage();
-              }
             }
+          } catch (error) {
+            console.debug('Storage change handling - content script not ready:', error);
           }
         } catch (error) {
-          console.error('Error handling storage change:', error);
+          console.warn('Error handling storage change:', error);
         } finally {
           setIsUpdating(false);
         }
@@ -622,7 +737,12 @@ function App() {
       // Initialize cross-tab sync
       await crossTabSync.initialize();
 
-      await testConnection();
+      // Test connection - but don't fail if it fails (content script may not be loaded yet)
+      try {
+        await testConnection();
+      } catch (error) {
+        console.warn('⚠️ Connection test failed (content script may not be ready yet):', error);
+      }
 
       // Start cache loading and show checking state only if it takes time
       const cacheCheckPromise = loadCachedAnalysisFast();
@@ -645,8 +765,13 @@ function App() {
       // Continue with full analysis check in background
       await fullCheckPromise;
 
-      // Check if current page is a policy page
-      await checkPolicyPage();
+      // Check if current page is a policy page (with error handling)
+      try {
+        await checkPolicyPage();
+      } catch (error) {
+        console.warn('⚠️ Policy page check failed:', error);
+        setIsPolicyPage(false);
+      }
 
       // Final cleanup
       setIsCheckingCache(false);
@@ -656,13 +781,15 @@ function App() {
     }
   };  const testConnection = async () => {
     try {
-      const response = await MessagingService.sendToActiveTab('PING');
+      // Use retries: 1 to give content script time to load (500ms + 1000ms backoff)
+      const response = await MessagingService.sendToActiveTab('PING', undefined, { retries: 1 });
       if (response.success) {
         console.log('✅ Connection successful:', response.data);
       }
     } catch (error) {
-      console.error('❌ Connection failed:', error);
-      setError(createErrorFromMessage('Connection to website failed - check your internet connection'));
+      // Don't show error - content script may not be ready yet
+      // This is normal during page load, and loadCachedAnalysisFull will retry with more attempts
+      console.debug('⏳ Content script not responding yet, will retry with full cache load:', error);
     }
   };
 
@@ -703,91 +830,105 @@ function App() {
         const tab = await MessagingService.getActiveTab();
         if (!tab?.url) return;
 
+        // Skip cache loading for pages where content scripts can't run
+        if (tab.url.startsWith('chrome://')) {
+          console.log('⏭️ Skipping cache load for chrome:// page');
+          return;
+        }
+
         // Get current page type from content script
         console.log('🔍 Getting page type for:', tab.url);
-        const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO');
-        
-        if (!pageInfoResponse.success || !pageInfoResponse.data) {
-          console.log('❌ Could not get page info');
-          return;
-        }
-
-        const pageType = pageInfoResponse.data.pageType || 'other';
-        const confidence = pageInfoResponse.data.pageTypeConfidence || 0;
-        console.log(`📄 Detected page type: ${pageType} (confidence: ${confidence}%)`);
-
-        // Check if analysis is in progress for THIS specific page type
-        const inProgress = await StorageService.isAnalysisInProgress(tab.url, pageType);
-        if (inProgress) {
-          console.log(`⏳ Analysis in progress for ${pageType}, entering loading state`);
-          startAnalysis(tab.url);
-          
-          // Try to restore partial results if available
-          const partialResult = await StorageService.loadPartialResult(tab.url, pageType);
-          if (partialResult) {
-            console.log(`📊 Restored partial result for ${pageType}`);
-            setPartialResult(partialResult);
-          }
-          
-          return;
-        }
-
-        // STEP 1: Check Chrome storage cache (fast, local)
-        console.log(`🔍 Checking Chrome storage cache for: ${tab.url} (${pageType})`);
-        const chromeCached = await StorageService.getCachedAnalysis(tab.url, pageType);
-        
-        if (chromeCached && isValidAnalysisResult(chromeCached)) {
-          // Only update if we don't already have a result from fast loading
-          if (!analysisResult) {
-            console.log(`✅ Chrome cache hit for ${pageType}:`, chromeCached);
-            setAnalysisResult(chromeCached);
-            setIsFromCache(true);
-          }
-          return; // Found in Chrome cache, stop looking
-        }
-
-        // STEP 2: Check backend database cache (persistent, survives browser restart)
-        console.log(`🔍 Checking backend cache for: ${tab.url} (${pageType})`);
         try {
-          const backendCacheUrl = getApiUrl(`/api/jobs/cached?url=${encodeURIComponent(tab.url)}&pageType=${encodeURIComponent(pageType)}`);
-          const backendResponse = await fetch(backendCacheUrl, { 
-            method: 'GET',
-            headers: { 'Content-Type': 'application/json' }
-          });
+          // Use full retries (2) for better resilience during tab switching
+          // Total time: up to 1500ms (500ms + 1000ms backoff) before giving up
+          const pageInfoResponse = await MessagingService.sendToActiveTab('GET_PAGE_INFO', undefined, { retries: 2 });
           
-          if (backendResponse.ok) {
-            const backendData = await backendResponse.json();
+          if (!pageInfoResponse.success || !pageInfoResponse.data) {
+            console.log('⚠️ Could not get page info - content script may not be ready yet');
+            return;
+          }
+
+          const pageType = pageInfoResponse.data.pageType || 'other';
+          const confidence = pageInfoResponse.data.pageTypeConfidence || 0;
+          console.log(`📄 Detected page type: ${pageType} (confidence: ${confidence}%)`);
+
+          // Check if analysis is in progress for THIS specific page type
+          const inProgress = await StorageService.isAnalysisInProgress(tab.url, pageType);
+          if (inProgress) {
+            console.log(`⏳ Analysis in progress for ${pageType}, entering loading state`);
+            startAnalysis(tab.url);
             
-            if (backendData.cached && backendData.analysis?.result_data) {
-              const backendResult = backendData.analysis.result_data;
+            // Try to restore partial results if available
+            const partialResult = await StorageService.loadPartialResult(tab.url, pageType);
+            if (partialResult) {
+              console.log(`📊 Restored partial result for ${pageType}`);
+              setPartialResult(partialResult);
+            }
+            
+            return;
+          }
+
+          // STEP 1: Check Chrome storage cache (fast, local)
+          console.log(`🔍 Checking Chrome storage cache for: ${tab.url} (${pageType})`);
+          const chromeCached = await StorageService.getCachedAnalysis(tab.url, pageType);
+          
+          if (chromeCached && isValidAnalysisResult(chromeCached)) {
+            // Only update if we don't already have a result from fast loading
+            if (!analysisResult) {
+              console.log(`✅ Chrome cache hit for ${pageType}:`, chromeCached);
+              setAnalysisResult(chromeCached);
+              setIsFromCache(true);
+            }
+            return; // Found in Chrome cache, stop looking
+          }
+
+          // STEP 2: Check backend database cache (persistent, survives browser restart)
+          console.log(`🔍 Checking backend cache for: ${tab.url} (${pageType})`);
+          try {
+            const backendCacheUrl = getApiUrl(`/api/jobs/cached?url=${encodeURIComponent(tab.url)}&pageType=${encodeURIComponent(pageType)}`);
+            const backendResponse = await fetch(backendCacheUrl, { 
+              method: 'GET',
+              headers: { 'Content-Type': 'application/json' }
+            });
+            
+            if (backendResponse.ok) {
+              const backendData = await backendResponse.json();
               
-              // Validate the result from backend
-              if (isValidAnalysisResult(backendResult)) {
-                console.log(`✅ Backend cache hit for ${pageType} (${backendData.cacheAge || 0}s old):`, backendResult);
+              if (backendData.cached && backendData.analysis?.result_data) {
+                const backendResult = backendData.analysis.result_data;
                 
-                // Also store in Chrome cache for faster next time
-                await cacheService.set(tab.url, pageType, backendResult);
-                
-                // Only update if we don't already have a result from fast loading
-                if (!analysisResult) {
-                  setAnalysisResult(backendResult);
-                  setIsFromCache(true);
+                // Validate the result from backend
+                if (isValidAnalysisResult(backendResult)) {
+                  console.log(`✅ Backend cache hit for ${pageType} (${backendData.cacheAge || 0}s old):`, backendResult);
+                  
+                  // Also store in Chrome cache for faster next time
+                  await cacheService.set(tab.url, pageType, backendResult);
+                  
+                  // Only update if we don't already have a result from fast loading
+                  if (!analysisResult) {
+                    setAnalysisResult(backendResult);
+                    setIsFromCache(true);
+                  }
+                  return; // Found in backend cache, stop looking
                 }
-                return; // Found in backend cache, stop looking
               }
             }
+          } catch (backendError) {
+            // Backend cache check failed - that's okay, continue to ready for analysis
+            console.warn('⚠️ Backend cache check failed:', backendError);
           }
-        } catch (backendError) {
-          // Backend cache check failed - that's okay, continue to ready for analysis
-          console.warn('⚠️ Backend cache check failed:', backendError);
-        }
 
-        // STEP 3: No cache found anywhere - ready for fresh analysis
-        console.log(`❌ No cache found for ${pageType} - ready to analyze`);
-        setIsFromCache(false);
+          // STEP 3: No cache found anywhere - ready for fresh analysis
+          console.log(`❌ No cache found for ${pageType} - ready to analyze`);
+          setIsFromCache(false);
+        } catch (messageError) {
+          console.warn('⚠️ Failed to get page info from content script (may not be ready):', messageError);
+          // Content script not ready - don't fail, just skip cache loading
+          return;
+        }
       } catch (error) {
         console.error('Failed to load cache:', error);
-        setError(createErrorFromMessage('Failed to load cached analysis - storage access error'));
+        // Don't show error to user - cache loading is optional
       }
     });
   };
@@ -1015,10 +1156,21 @@ function App() {
                   <div className="w-8 h-8 border-3 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
                 </div>
                 <div className="space-y-2">
-                  <h3 className="text-lg font-bold text-gray-800">Checking Cache</h3>
-                  <p className="text-sm text-gray-600 max-w-xs mx-auto">
-                    Looking for previous analysis results to show instantly
-                  </p>
+                  {isTransitioningTab ? (
+                    <>
+                      <h3 className="text-lg font-bold text-gray-800">Switching Tabs...</h3>
+                      <p className="text-sm text-gray-600 max-w-xs mx-auto">
+                        Loading analysis for this website
+                      </p>
+                    </>
+                  ) : (
+                    <>
+                      <h3 className="text-lg font-bold text-gray-800">Checking Cache</h3>
+                      <p className="text-sm text-gray-600 max-w-xs mx-auto">
+                        Looking for previous analysis results to show instantly
+                      </p>
+                    </>
+                  )}
                   <div className="flex items-center justify-center gap-1 mt-3">
                     <span className="inline-block w-2 h-2 bg-blue-500 rounded-full animate-bounce"></span>
                     <span className="inline-block w-2 h-2 bg-purple-500 rounded-full animate-bounce" style={{ animationDelay: '0.1s' }}></span>

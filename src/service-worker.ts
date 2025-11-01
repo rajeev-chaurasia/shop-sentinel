@@ -652,6 +652,69 @@ const messageHandlers = {
   },
 
   /**
+   * Pass through ANALYSIS_PROGRESS messages to popup
+   */
+  ANALYSIS_PROGRESS: async (payload: any): Promise<any> => {
+    try {
+      console.log('📊 Analysis progress:', payload);
+      // Relay to popup via runtime message
+      chrome.runtime.sendMessage({
+        action: 'ANALYSIS_PROGRESS',
+        payload
+      }).catch(err => {
+        // Popup may not be open, that's okay
+        console.debug('Popup not listening for progress:', err);
+      });
+      return { success: true };
+    } catch (error) {
+      console.error('❌ Error handling analysis progress:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Pass through PARTIAL_ANALYSIS_RESULT messages to popup
+   */
+  PARTIAL_ANALYSIS_RESULT: async (payload: any): Promise<any> => {
+    try {
+      console.log('📋 Partial analysis result:', payload);
+      // Relay to popup via runtime message
+      chrome.runtime.sendMessage({
+        action: 'PARTIAL_ANALYSIS_RESULT',
+        payload
+      }).catch(err => {
+        // Popup may not be open, that's okay
+        console.debug('Popup not listening for partial results:', err);
+      });
+      return { success: true };
+    } catch (error) {
+      console.error('❌ Error handling partial analysis result:', error);
+      throw error;
+    }
+  },
+
+  /**
+   * Pass through ANALYSIS_COMPLETE messages to popup
+   */
+  ANALYSIS_COMPLETE: async (payload: any): Promise<any> => {
+    try {
+      console.log('✅ Analysis complete:', payload);
+      // Relay to popup via runtime message
+      chrome.runtime.sendMessage({
+        action: 'ANALYSIS_COMPLETE',
+        payload
+      }).catch(err => {
+        // Popup may not be open, that's okay
+        console.debug('Popup not listening for completion:', err);
+      });
+      return { success: true };
+    } catch (error) {
+      console.error('❌ Error handling analysis complete:', error);
+      throw error;
+    }
+  },
+
+  /**
    * Get active job status for UI restoration (when popup reopens)
    */
   GET_ACTIVE_JOB: async (): Promise<any> => {

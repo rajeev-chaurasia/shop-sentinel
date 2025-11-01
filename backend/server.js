@@ -6,9 +6,10 @@ const helmet = require('helmet');
 const { WebSocketServer } = require('ws');
 const fs = require('fs');
 const path = require('path');
-const { Client } = require('pg');
+const { Pool } = require('pg');
 const { v4: uuidv4 } = require('uuid');
 const http = require('http');
+const EventEmitter = require('events');
 require('dotenv').config();
 
 // Import simplified parallelization services
@@ -21,11 +22,33 @@ const app = express();
 const PORT = parseInt(process.env.PORT || '3002', 10);
 
 // Global service instances
+let pool = null;
 let concurrencyControl = null;
 let taskScheduler = null;
 let jobQueue = null;
 let monitoringService = null;
-let dbClient = null;
+
+// Database connection pool management
+async function getDbConnection() {
+  if (!pool) {
+    pool = new Pool({
+      connectionString: process.env.DATABASE_URL,
+      max: 20, // Maximum number of connections
+      idleTimeoutMillis: 30000,
+      connectionTimeoutMillis: 2000,
+    });
+
+    // Handle pool errors to prevent unhandled rejections
+    pool.on('error', (err) => {
+      console.error('❌ Unexpected error on idle client in pool:', err);
+      // Pool will handle reconnection automatically
+    });
+
+    console.log('✅ Database pool created');
+  }
+  
+  return pool;
+}
 
 // Middleware
 app.use(helmet());
@@ -35,24 +58,6 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization']
 }));
 app.use(express.json());
-
-async function getDbConnection() {
-  if (dbClient) return dbClient;
-  
-  try {
-    const client = new Client({
-      connectionString: process.env.DATABASE_URL
-    });
-    await client.connect();
-    dbClient = client;
-    console.log('✅ Database connected');
-    
-    return client;
-  } catch (error) {
-    console.error('❌ Database connection failed:', error.message);
-    throw error;
-  }
-}
 
 // WHOIS API configuration
 const WHOIS_API_KEY = process.env.WHOIS_API_KEY;
@@ -64,7 +69,7 @@ const WHOIS_API_BASE_URL = 'https://api.apilayer.com/whois/query';
 async function initializeDatabase() {
   try {
     console.log('🔧 Initializing database...');
-    const client = await getDbConnection();
+    const pool = await getDbConnection();
     
     // Read schema
     const schemaPath = path.join(__dirname, 'schema.sql');
@@ -78,13 +83,14 @@ async function initializeDatabase() {
     
     for (const statement of statements) {
       if (statement.trim()) {
-        await client.query(statement);
+        await pool.query(statement);
       }
     }
     
     console.log('✅ Database initialized successfully');
   } catch (error) {
     console.error('❌ Database initialization failed:', error.message);
+    throw error;
   }
 }
 
@@ -147,11 +153,13 @@ async function initializeParallelizationServices() {
 
 // Create job
 app.post('/api/jobs', async (req, res) => {
+  let client;
   try {
     const { url, pageType, options } = req.body;
     if (!url) return res.status(400).json({ error: 'URL required' });
     
-    const client = await getDbConnection();
+    const pool = await getDbConnection();
+    client = await pool.connect();
     const jobId = uuidv4();
     const query = `
       INSERT INTO jobs (id, url, page_type, status, progress, session_id, created_at, updated_at)
@@ -177,20 +185,30 @@ app.post('/api/jobs', async (req, res) => {
     // Start job execution in background (don't wait)
     const includeAI = options?.includeAI !== false;
     setImmediate(async () => {
+      let bgClient;
       try {
+        bgClient = await pool.connect();
         await jobQueue.executeJob(jobId, url, { pageType, ...options }, includeAI);
         
         // Update job status to completed
-        await client.query(
+        await bgClient.query(
           'UPDATE jobs SET status = $1, progress = $2, updated_at = NOW() WHERE id = $3',
           ['completed', 100, jobId]
         );
       } catch (error) {
         console.error(`Job execution failed: ${error.message}`);
-        await client.query(
-          'UPDATE jobs SET status = $1, message = $2, updated_at = NOW() WHERE id = $3',
-          ['failed', error.message, jobId]
-        );
+        try {
+          if (bgClient) {
+            await bgClient.query(
+              'UPDATE jobs SET status = $1, message = $2, updated_at = NOW() WHERE id = $3',
+              ['failed', error.message, jobId]
+            );
+          }
+        } catch (updateError) {
+          console.error('Failed to update job status:', updateError.message);
+        }
+      } finally {
+        if (bgClient) bgClient.release();
       }
     });
 
@@ -198,14 +216,18 @@ app.post('/api/jobs', async (req, res) => {
   } catch (error) {
     console.error('❌ Job creation failed:', error);
     res.status(500).json({ error: error.message });
+  } finally {
+    if (client) client.release();
   }
 });
 
 // Get job status
 app.get('/api/jobs/:jobId', async (req, res) => {
+  let client;
   try {
     const { jobId } = req.params;
-    const client = await getDbConnection();
+    const pool = await getDbConnection();
+    client = await pool.connect();
     const query = 'SELECT * FROM jobs WHERE id = $1';
     const result = await client.query(query, [jobId]);
     
@@ -216,29 +238,37 @@ app.get('/api/jobs/:jobId', async (req, res) => {
   } catch (error) {
     console.error('❌ Get job failed:', error);
     res.status(500).json({ error: error.message });
+  } finally {
+    if (client) client.release();
   }
 });
 
 // List jobs
 app.get('/api/jobs', async (req, res) => {
+  let client;
   try {
     const { limit = 50, offset = 0 } = req.query;
-    const client = await getDbConnection();
+    const pool = await getDbConnection();
+    client = await pool.connect();
     const query = 'SELECT * FROM jobs ORDER BY created_at DESC LIMIT $1 OFFSET $2';
     const result = await client.query(query, [limit, offset]);
     res.json({ success: true, jobs: result.rows });
   } catch (error) {
     console.error('❌ List jobs failed:', error);
     res.status(500).json({ error: error.message });
+  } finally {
+    if (client) client.release();
   }
 });
 
 // Update job progress
 app.patch('/api/jobs/:jobId', async (req, res) => {
+  let client;
   try {
     const { jobId } = req.params;
     const { progress, status, message, stage, result } = req.body;
-    const client = await getDbConnection();
+    const pool = await getDbConnection();
+    client = await pool.connect();
     
     const updateQuery = `
       UPDATE jobs
@@ -275,16 +305,20 @@ app.patch('/api/jobs/:jobId', async (req, res) => {
   } catch (error) {
     console.error('❌ Update job failed:', error);
     res.status(500).json({ error: error.message });
+  } finally {
+    if (client) client.release();
   }
 });
 
 // Check if analysis already cached
 app.get('/api/jobs/cached', async (req, res) => {
+  let client;
   try {
     const { url, pageType } = req.query;
     if (!url) return res.status(400).json({ error: 'URL required' });
     
-    const client = await getDbConnection();
+    const pool = await getDbConnection();
+    client = await pool.connect();
     const query = `
       SELECT j.*, jr.result_data
       FROM jobs j
@@ -316,6 +350,8 @@ app.get('/api/jobs/cached', async (req, res) => {
   } catch (error) {
     console.error('❌ Cache lookup failed:', error);
     res.status(500).json({ error: error.message });
+  } finally {
+    if (client) client.release();
   }
 });
 
@@ -465,18 +501,44 @@ app.get('/api/monitoring/tasks', async (req, res) => {
 });
 
 // Health check
-app.get('/health', (req, res) => {
-  res.json({ 
-    status: 'ok', 
-    timestamp: new Date().toISOString(), 
-    database: dbClient ? 'connected' : 'disconnected',
-    services: {
-      concurrencyControl: !!concurrencyControl,
-      taskScheduler: !!taskScheduler,
-      jobQueue: !!jobQueue,
-      monitoringService: !!monitoringService
+app.get('/health', async (req, res) => {
+  try {
+    const poolStatus = pool ? 'ready' : 'not initialized';
+    
+    // Try to get a connection to verify pool works
+    let isHealthy = false;
+    try {
+      if (pool) {
+        const testClient = await pool.connect();
+        testClient.release();
+        isHealthy = true;
+      }
+    } catch (e) {
+      console.warn('Health check: Pool connection failed:', e.message);
+      isHealthy = false;
     }
-  });
+
+    res.json({ 
+      status: isHealthy ? 'ok' : 'degraded', 
+      timestamp: new Date().toISOString(), 
+      database: {
+        status: poolStatus,
+        healthy: isHealthy
+      },
+      services: {
+        concurrencyControl: !!concurrencyControl,
+        taskScheduler: !!taskScheduler,
+        jobQueue: !!jobQueue,
+        monitoringService: !!monitoringService
+      }
+    });
+  } catch (error) {
+    console.error('Health check error:', error);
+    res.status(500).json({ 
+      status: 'error',
+      error: error.message
+    });
+  }
 });
 
 // Error handling
@@ -515,8 +577,9 @@ process.on('SIGINT', async () => {
     await jobQueue.shutdown();
   }
   
-  if (dbClient) {
-    await dbClient.end();
+  if (pool) {
+    await pool.end();
+    console.log('✅ Database pool closed');
   }
   
   server.close();
