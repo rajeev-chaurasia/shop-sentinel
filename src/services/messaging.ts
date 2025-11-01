@@ -74,6 +74,11 @@ export const MessagingService = {
         if (!tab?.id) {
           throw new MessagingError('No active tab found', 'TAB_ERROR');
         }
+
+        // Skip messaging for pages where content scripts can't run
+        if (tab.url?.startsWith('chrome://')) {
+          throw new MessagingError('Content scripts cannot run on this page', 'TAB_ERROR');
+        }
         
         const message = createMessage(action, payload);
         const response = await sendMessageWithTimeout<TResponse>(
@@ -90,6 +95,7 @@ export const MessagingService = {
         }
         
         if (attempt < retries) {
+          // Add a slight delay before retrying (content script may be loading)
           await new Promise((resolve) => setTimeout(resolve, RETRY_CONFIG.getBackoffDelay(attempt)));
         }
       }
