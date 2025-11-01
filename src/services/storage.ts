@@ -219,12 +219,10 @@ export const StorageService = {
         return true;
       } else {
         // Check if any page type is in progress
-        const parsed = new URL(url);
-        const domain = parsed.hostname.replace(/^www\./, '');
         const pageTypes = ['home', 'product', 'category', 'checkout', 'cart', 'policy', 'other'];
         
         for (const type of pageTypes) {
-          const progressKey = `progress_${domain}:${type}`;
+          const progressKey = `progress_${this.generateCacheKey(url, type)}`;
           const progress = await this.get<AnalysisProgress>(progressKey);
           if (progress && Date.now() - progress.startedAt <= PROGRESS_TIMEOUT_MS) {
             return true;
@@ -248,11 +246,9 @@ export const StorageService = {
         return this.remove(progressKey);
       } else {
         // Clear all page types
-        const parsed = new URL(url);
-        const domain = parsed.hostname.replace(/^www\./, '');
         const pageTypes = ['home', 'product', 'category', 'checkout', 'cart', 'policy', 'other'];
         const promises = pageTypes.map(type => 
-          this.remove(`progress_${domain}:${type}`)
+          this.remove(`progress_${this.generateCacheKey(url, type)}`)
         );
         await Promise.all(promises);
         console.log(`✅ Cleared all progress markers for ${url}`);

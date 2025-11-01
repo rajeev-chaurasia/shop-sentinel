@@ -379,69 +379,80 @@ export function checkSuspiciousURL(domain: string): { isSuspicious: boolean; sig
     }
   }
 
-  // Check for typosquatting (similar to known brands)
-  const knownBrands = [
-    'amazon', 'ebay', 'walmart', 'target', 'bestbuy', 
-    'paypal', 'apple', 'google', 'microsoft', 'facebook'
-  ];
-
+  // Heuristic typosquatting detection using structural patterns
+  // (Generic for ANY brand, not hardcoded)
+  // Note: Specific brand mimicry is handled by RAG analysis in Phase 3a
+  // This heuristic checks common typosquatting patterns instead
+  
   const domainWithoutTLD = domain.split('.')[0].toLowerCase();
-
-  for (const brand of knownBrands) {
-    if (domainWithoutTLD === brand) {
-      continue; // It's the real brand
-    }
-
-    // Check for character substitution (e.g., amaz0n, appl3)
-    const distance = levenshteinDistance(domainWithoutTLD, brand);
-    if (distance > 0 && distance <= 2) {
+  
+  // Check for common typosquatting patterns (not brand-specific)
+  
+  // Pattern 1: Excessive hyphens (keyword stuffing)
+  if (domainWithoutTLD.split('-').length >= 3) {
+    return {
+      isSuspicious: true,
+      signal: {
+        id: 'typosquatting-hyphens',
+        score: SCORES.SUSPICIOUS_URL - 10, // Slightly lower than critical
+        reason: 'Domain uses excessive hyphens (keyword stuffing pattern)',
+        severity: 'high',
+        category: 'legitimacy',
+        source: 'heuristic',
+        details: `Domain "${domain}" contains multiple hyphens, suggesting keyword stuffing or domain manipulation`,
+      },
+    };
+  }
+  
+  // Pattern 2: Numbers replacing letters (visual substitution)
+  // e.g., "amaz0n" (0 for O), "4mazon" (4 for A), "p4yp41" (for paypal)
+  const numberSubstitutions = /[0134578]/g;
+  if (domainWithoutTLD.match(numberSubstitutions)) {
+    const hasLetterVariants = ['a','e','i','o','s','l','g','b','t'].some(letter => 
+      domainWithoutTLD.includes(letter) && domainWithoutTLD.replace(/[0-9]/g, '').includes(letter)
+    );
+    
+    if (hasLetterVariants) {
       return {
         isSuspicious: true,
         signal: {
-          id: 'typosquatting',
-          score: SCORES.SUSPICIOUS_URL,
-          reason: `Domain suspiciously similar to "${brand}"`,
-          severity: 'critical',
+          id: 'typosquatting-numbers',
+          score: SCORES.SUSPICIOUS_URL - 5,
+          reason: 'Domain uses numbers as letter substitutes (common typosquatting technique)',
+          severity: 'high',
           category: 'legitimacy',
           source: 'heuristic',
-          details: `Potential typosquatting attack mimicking the legitimate brand "${brand}"`,
+          details: `Domain "${domain}" contains number-to-letter substitutions, suggesting visual mimicry`,
         },
       };
     }
   }
 
-  return { isSuspicious: false };
-}
-
-/**
- * Calculate Levenshtein distance for typosquatting detection
- */
-function levenshteinDistance(str1: string, str2: string): number {
-  const matrix: number[][] = [];
-
-  for (let i = 0; i <= str2.length; i++) {
-    matrix[i] = [i];
-  }
-
-  for (let j = 0; j <= str1.length; j++) {
-    matrix[0][j] = j;
-  }
-
-  for (let i = 1; i <= str2.length; i++) {
-    for (let j = 1; j <= str1.length; j++) {
-      if (str2.charAt(i - 1) === str1.charAt(j - 1)) {
-        matrix[i][j] = matrix[i - 1][j - 1];
-      } else {
-        matrix[i][j] = Math.min(
-          matrix[i - 1][j - 1] + 1,
-          matrix[i][j - 1] + 1,
-          matrix[i - 1][j] + 1
-        );
+  // Pattern 3: Suspicious brand-sale pattern
+  // e.g., "amazon-sale", "ebay-deals", "paypal-account"
+  const suspiciousSuffixes = ['-sale', '-deals', '-shop', '-store', '-account', '-login', '-secure', '-verify'];
+  for (const suffix of suspiciousSuffixes) {
+    if (domainWithoutTLD.endsWith(suffix)) {
+      const beforeSuffix = domainWithoutTLD.slice(0, -suffix.length);
+      // If domain part before suffix is short (likely a brand name), flag it
+      if (beforeSuffix.length > 2 && beforeSuffix.length < 20) {
+        return {
+          isSuspicious: true,
+          signal: {
+            id: 'typosquatting-suffix',
+            score: SCORES.SUSPICIOUS_URL - 10,
+            reason: `Domain uses suspicious suffix pattern: "${domainWithoutTLD}"`,
+            severity: 'high',
+            category: 'legitimacy',
+            source: 'heuristic',
+            details: `Domain suffix "${suffix}" is commonly used in phishing domains to mimic legitimate sites`,
+          },
+        };
       }
     }
   }
 
-  return matrix[str2.length][str1.length];
+  return { isSuspicious: false };
 }
 
 /**

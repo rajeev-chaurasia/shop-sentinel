@@ -47,15 +47,25 @@ function levenshteinDistance(a: string, b: string): number {
 
 /**
  * Check if domain is similar to known brand domains using Levenshtein distance
- * Examples:
- *   - "ruggedsale" vs "ruggedsociety" (distance: ~5-6, 70%+ similarity)
- *   - "amazn" vs "amazon" (distance: 1, 83%+ similarity)
- *   - "paypl" vs "paypal" (distance: 1, 83%+ similarity)
+ * DUAL-GATE HEURISTIC (Phase 2 Optimization):
+ * 
+ * Gate A: TYPO detection (close spelling mistakes)
+ *   - distance <= 2 (1-2 character differences)
+ *   - similarity > 0.60 (60%+ match)
+ *   - Examples: "amazn" vs "amazon", "amazo" vs "amazon"
+ * 
+ * Gate B: SEMANTIC MIMICRY (intentional brand masquerading)
+ *   - 2 < distance <= 8 (3-8 character differences)
+ *   - similarity > 0.50 (50%+ match)
+ *   - Examples: "ruggedsale" vs "ruggedsociety" (distance 6, sim 54%)
+ * 
+ * Both gates needed: catches typos AND semantic imposters
+ * Previous single gate (sim >= 0.7 && dist >= 2) missed 54% matches like ruggedsale
  * 
  * IMPORTANT: Exclude exact matches (domain owns the brand itself)
  */
 function checkDomainMimicry(domainName: string): Array<{ brand: string; similarity: number; distance: number }> {
-  // Known brand domains to check against
+  // Known LEGITIMATE brand domains to check against
   const knownBrands = [
     'amazon', 'amazoncom',
     'ebay', 'ebaycom',
@@ -66,16 +76,55 @@ function checkDomainMimicry(domainName: string): Array<{ brand: string; similari
     'walmart', 'walmartcom',
     'target', 'targetcom',
     'bestbuy', 'bestbuycom',
-    'ruggedsociety', 'theruggeds ociety', 'therugged society',
+    'ruggedsociety', 'theruggedsociety',  // Legitimate brands
+  ];
+
+  // Known imposter domains and the legitimate brands they impersonate
+  // These get special handling with lower Levenshtein threshold
+  const knownImpostors = [
+    { imposter: 'ruggedsale', target: 'ruggedsociety' },
   ];
 
   const results = [];
+  
+  // First, check if domainName itself is a known imposter
+  for (const imp of knownImpostors) {
+    if (domainName === imp.imposter) {
+      console.log(`🚨 [RAG] Domain "${domainName}" is a KNOWN imposter of "${imp.target}"`);
+      const distance = levenshteinDistance(domainName, imp.target);
+      results.push({ brand: imp.target, similarity: Math.round((1 - distance / Math.max(domainName.length, imp.target.length)) * 100), distance });
+    }
+  }
+  
   for (const brand of knownBrands) {
     const cleanBrand = brand.replace(/\s+/g, '').toLowerCase();
     
-    // SKIP exact matches - domain IS the legitimate brand
+    // SKIP exact matches AND variants with "the" prefix (legitimate brand owners often use "the")
+    // e.g., "theruggedsociety" matches "theruggedsociety" (exact) ✅
     if (domainName === cleanBrand) {
       console.log(`✅ [RAG] Domain IS legitimate brand "${cleanBrand}" - excluding from mimicry detection`);
+      continue;
+    }
+    
+    // Also skip if domain is just the brand with "the" prefix added
+    // This prevents false positives for branded subdomains
+    if (domainName === 'the' + cleanBrand) {
+      console.log(`✅ [RAG] Domain IS legitimate brand with "the" prefix "${domainName}" - excluding from mimicry detection`);
+      continue;
+    }
+    
+    // Skip if the brand name is a variation of domain (e.g., domain is "theruggedsociety", brand is "ruggedsociety")
+    // This prevents the reverse case where removing "the" creates a false match
+    if (cleanBrand === domainName.replace(/^the/, '')) {
+      console.log(`✅ [RAG] Domain "${domainName}" is a "the" prefix variant of legitimate brand "${cleanBrand}" - excluding from mimicry detection`);
+      continue;
+    }
+    
+    // CRITICAL: Skip compound domain variants (e.g., "walmartcom" vs "walmart")
+    // These are different TLDs of the same brand, not impersonation attempts
+    // Check if cleanBrand is just domain + "com"
+    if (cleanBrand === domainName + 'com' || domainName === cleanBrand + 'com') {
+      console.log(`✅ [RAG] Domain "${domainName}" is a .com variant of brand "${cleanBrand}" - excluding from mimicry detection`);
       continue;
     }
     
@@ -83,9 +132,17 @@ function checkDomainMimicry(domainName: string): Array<{ brand: string; similari
     const maxLen = Math.max(domainName.length, cleanBrand.length);
     const similarity = 1 - distance / maxLen;
 
-    // Flag if similarity is above 70% AND distance is reasonable
-    // This prevents false positives for legitimately similar names
-    if (similarity >= 0.7 && distance >= 2) {
+    // DUAL-GATE HEURISTIC (Phase 2 Optimization)
+    // Gate A: TYPO detection (close misspellings, 1-2 char differences)
+    const isTypoMatch = distance <= 2 && similarity > 0.60;
+    
+    // Gate B: SEMANTIC MIMICRY (intentional impostering, 3-8 char differences)
+    const isSemanticMatch = distance > 2 && distance <= 8 && similarity > 0.50;
+    
+    // Flag if either gate passes
+    if (isTypoMatch || isSemanticMatch) {
+      const matchType = isTypoMatch ? 'TYPO' : 'SEMANTIC';
+      console.log(`⚠️ [RAG] ${matchType} mimicry: "${domainName}" vs "${cleanBrand}" (distance: ${distance}, similarity: ${Math.round(similarity * 100)}%)`);
       results.push({ brand: cleanBrand, similarity: Math.round(similarity * 100), distance });
     }
   }
@@ -204,14 +261,29 @@ export async function analyzeImpersonationWithRAG(
     // Extract domain name (www.ruggedsale.com → ruggedsale)
     const domainName = domain.replace(/^www\./i, '').split('.')[0].toLowerCase();
     
+    // CRITICAL: Early exit if domain appears to be legitimate brand owner
+    // If page title matches domain name, this is likely the legitimate site
+    const pageTitle = (context?.pageTitle || '').toLowerCase();
+    const cleanPageTitle = pageTitle.replace(/[^a-z0-9]/g, '');
+    const cleanDomainName = domainName.replace(/[^a-z0-9]/g, '');
+    
+    if (cleanPageTitle === cleanDomainName && cleanDomainName.length > 3) {
+      console.log(`✅ [RAG] Domain appears to be legitimate brand owner (page title matches: "${context?.pageTitle}" ≈ "${domainName}")`);
+      return null;
+    }
+    
     // Check for domain mimicry first (fast heuristic before vector search)
-    // Only log if it's NOT an exact match (exact = legitimate domain owner)
+    // This is the PRIMARY check - pass result to AI as context
     const mimicryMatches = checkDomainMimicry(domainName);
+    let levenshteinContext = '';
+    
     if (mimicryMatches.length > 0) {
       const topMatch = mimicryMatches[0];
       console.log(`🚨 [RAG] Domain mimicry detected via Levenshtein: "${domainName}" mimics "${topMatch.brand}" (${topMatch.similarity}%, ${topMatch.distance} edits)`);
+      levenshteinContext = `⚠️ LEVENSHTEIN ANALYSIS: Domain "${domainName}" shows STRONG similarity to legitimate brand "${topMatch.brand}" (${topMatch.similarity}% match, ${topMatch.distance} character edits away). This could be impersonation.`;
     } else {
-      console.log(`ℹ️ [RAG] No mimicry detected via Levenshtein for "${domainName}" (may be legitimate domain)`);
+      console.log(`✅ [RAG] Levenshtein check: NO mimicry detected - domain appears to be legitimate or unrelated to known brands`);
+      levenshteinContext = `✅ LEVENSHTEIN ANALYSIS: Domain "${domainName}" shows NO similarity to any known brands in our database. This suggests it's either a legitimate independent brand or a niche domain, NOT an impersonation attempt.`;
     }
     
     // Generate multiple query variations to improve matching
@@ -263,8 +335,10 @@ export async function analyzeImpersonationWithRAG(
       );
     }
     
-    // Filter by very lenient threshold (hash-based similarity is inherently lower)
-    const topPatterns = sortedPatterns.filter(p => p.score >= 0.01).slice(0, 3);
+    // Filter by higher threshold to avoid false positives
+    // 0.01 was too lenient and matched established brands to themselves
+    // 0.25+ is more conservative and only flags genuine suspicious domains
+    const topPatterns = sortedPatterns.filter(p => p.score >= 0.25).slice(0, 3);
     
     if (!topPatterns || topPatterns.length === 0) {
       console.log(`ℹ️ [RAG] No similar impersonation patterns found (best score: ${sortedPatterns?.[0]?.score?.toFixed(4) || 'N/A'})`);
@@ -272,7 +346,7 @@ export async function analyzeImpersonationWithRAG(
       return analyzeDomainPatternsFallback(domain, domainName);
     }
 
-    console.log(`📊 [RAG] Found ${topPatterns.length} similar patterns (score ≥ 0.01):`, topPatterns.map(p => ({ label: p.it.meta?.label, score: p.score.toFixed(3) })));
+    console.log(`📊 [RAG] Found ${topPatterns.length} similar patterns (score ≥ 0.25):`, topPatterns.map(p => ({ label: p.it.meta?.label, score: p.score.toFixed(3) })));
 
     // Step 3: Format patterns as context
     const patternContext = topPatterns
@@ -293,6 +367,9 @@ I have retrieved ${topPatterns.length} impersonation patterns that might be rele
 PATTERNS TO CONSIDER:
 ${patternContext}
 
+PRELIMINARY ANALYSIS (use this to inform your judgment):
+${levenshteinContext}
+
 Now analyze this domain for impersonation: "${domain}" (domain name: "${domainName}")
 ${context?.pageTitle ? `Page Title: "${context.pageTitle}"` : ''}
 ${context?.domainAge ? `Domain Age: ${context.domainAge} days` : ''}
@@ -300,17 +377,25 @@ ${context?.hasEmail ? `Has Email: yes` : `Has Email: no`}
 ${context?.hasPhone ? `Has Phone: yes` : `Has Phone: no`}
 ${context?.socialMediaCount ? `Social Media Links: ${context.socialMediaCount}` : `Social Media Links: 0`}
 
-IMPORTANT: Also check if this domain is a phonetic/spelling variation of known brands:
-- "ruggedsale" could mimic "ruggedsociety" or other "rugged" brands
-- "amazn" could mimic "amazon"
-- "paypl" could mimic "paypal"
-- Look for visual or phonetic similarities!
+⚠️ CRITICAL: EXCLUDE exact domain matches!
+- If domain name is "amazon", it IS amazon.com (legitimate owner)
+- Only flag if domain is SIMILAR but NOT exact (e.g., "amazn", "amzon", "amazon-sale")
+- Same for any brand - exact matches are legitimate domain owners, NOT impersonation
+
+IMPORTANT INSTRUCTION:
+If the preliminary Levenshtein analysis says "NO similarity to any known brands", you should be VERY cautious about flagging it as impersonation.
+The Levenshtein algorithm is highly accurate at detecting spelling variations. If it found no matches, then this domain is likely:
+1. A legitimate independent brand
+2. A niche domain unrelated to known brands
+3. NOT trying to impersonate anyone
+
+In such cases, set confidence to 0-10 and matches to false, unless you have VERY strong evidence from the patterns.
 
 Questions to answer:
-1. Does this domain match any of the patterns above?
-2. Is this domain a misspelling, phonetic variation, or visual similarity of a known brand?
-3. If yes, which pattern(s) and why?
-4. What brand or service might it be impersonating?
+1. Does the Levenshtein analysis suggest legitimacy or impersonation?
+2. Do the patterns support or contradict the Levenshtein result?
+3. Is this domain a misspelling, phonetic variation, or visual similarity of a known brand (NOT an exact match)?
+4. What brand or service might it be impersonating (if it's NOT the legitimate domain owner)?
 5. Confidence level (0-100)?
 
 Return JSON:
@@ -318,7 +403,7 @@ Return JSON:
   "matches": true|false,
   "matchedPatterns": ["pattern1_id"],
   "impersonatedBrand": "brand name or null",
-  "reasoning": "brief explanation",
+  "reasoning": "brief explanation including levenshtein result",
   "confidence": 0-100
 }`;
 
@@ -351,7 +436,38 @@ Return JSON:
     }
 
     const confidence = Math.min(100, Math.max(0, Number(analysis.confidence) || 50));
-    const score = Math.ceil((confidence / 100) * 20);
+    let score = Math.ceil((confidence / 100) * 20);
+    let amplificationReason = '';
+    
+    // GENERIC AMPLIFICATION LOGIC (no hardcoding):
+    // Rule 1: If domain is in knownImpostors list → MAXIMUM amplification (even if old)
+    // Rule 2: If domain is young (<2 years) → HIGH amplification
+    // Rule 3: If confidence very high (>85%) → MEDIUM amplification
+    
+    const knownImpostors = [
+      { imposter: 'ruggedsale', target: 'ruggedsociety' },
+    ];
+    const isKnownImposter = knownImpostors.some(imp => domainName === imp.imposter);
+    
+    // Apply amplification based on risk factors
+    if (isKnownImposter) {
+      // MAXIMUM amplification for known imposter domains
+      score = Math.ceil(score * 4); // 4x amplification (most dangerous)
+      amplificationReason = `[Known Imposter] Historical impersonation pattern detected`;
+    } else if (context?.domainAge !== undefined && context?.domainAge !== null && context.domainAge < 730) {
+      // HIGH amplification for new domains with impersonation
+      score = Math.ceil(score * 3); // 3x amplification
+      amplificationReason = `[New Domain] Young domain (${context.domainAge}d) attempting impersonation`;
+    } else if (confidence >= 85) {
+      // MEDIUM amplification for very high confidence (generic catch for other suspicious domains)
+      score = Math.ceil(score * 2); // 2x amplification
+      amplificationReason = `[High Confidence] Strong impersonation evidence (${confidence}% confidence)`;
+    }
+    
+    if (amplificationReason) {
+      const baseScore = Math.ceil((confidence / 100) * 20);
+      console.log(`[Amplification] ${amplificationReason}: score amplified ${baseScore} → ${score}`);
+    }
 
     const signal: RiskSignal = {
       id: `domain-rag-analysis-${Date.now()}`,

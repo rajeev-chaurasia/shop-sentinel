@@ -483,6 +483,7 @@ async function handleAnalyzePage(payload: any) {
               contact,
               security,
               policies,
+              pageTitle: document.title,
             });
             const phase3aDuration = performance.now() - phase3aStart;
             
@@ -742,7 +743,7 @@ async function handleAnalyzePage(payload: any) {
     // This ensures cache persists even if popup closes during analysis
     try {
       await StorageService.cacheAnalysis(window.location.href, pageType, analysis);
-      await StorageService.clearAnalysisProgress(window.location.href);
+      await StorageService.clearAnalysisProgress(window.location.href, pageType);
       console.log(`💾 Analysis cached: ${pageType}`);
       
       // ============================================================================
@@ -808,7 +809,7 @@ async function handleAnalyzePage(payload: any) {
     
     // Clear progress and release lock on error (robust cleanup)
     try {
-      await StorageService.clearAnalysisProgress(window.location.href);
+      await StorageService.clearAnalysisProgress(window.location.href, pageType);
       await StorageService.releaseAnalysisLock(window.location.href, pageType);
     } catch (cleanupError) {
       console.error('⚠️ Error during cleanup:', cleanupError);
@@ -1081,7 +1082,8 @@ window.addEventListener('beforeunload', async () => {
     
     const { StorageService } = await import('../services/storage');
     // Clear progress markers (analysis interrupted by navigation)
-    await StorageService.clearAnalysisProgress(window.location.href);
+    const pageType = detectPageTypeFromUrl(window.location.href);
+    await StorageService.clearAnalysisProgress(window.location.href, pageType);
     console.log('🧹 Cleaned up on page unload');
   } catch (error) {
     // Ignore errors during cleanup
