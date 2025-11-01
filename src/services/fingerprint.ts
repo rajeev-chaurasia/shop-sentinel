@@ -44,23 +44,6 @@ export class FingerprintService {
   private static readonly MIN_TEXT_LENGTH = 1000;
   private static readonly MAX_BRAND_LENGTH = 50;
 
-  // Trusted domains that are less likely to be compromised
-  private static readonly TRUSTED_DOMAINS = new Set([
-    'amazon.com', 'walmart.com', 'target.com', 'bestbuy.com', 'home-depot.com',
-    'myntra.com', 'flipkart.com', 'ajio.com', 'nykaa.com', 'firstcry.com',
-    'paytm.com', 'phonepe.com', 'gpay.com', 'paypal.com', 'stripe.com',
-    'google.com', 'microsoft.com', 'apple.com', 'facebook.com', 'instagram.com',
-    'twitter.com', 'linkedin.com', 'github.com', 'stackoverflow.com'
-  ]);
-
-  // Known brand variations to reduce false positives
-  private static readonly BRAND_VARIATIONS = new Map([
-    ['amazon', ['amazon prime', 'amazon web services', 'aws']],
-    ['google', ['google drive', 'google docs', 'gmail', 'youtube']],
-    ['microsoft', ['office 365', 'azure', 'bing']],
-    ['apple', ['icloud', 'app store', 'itunes']]
-  ]);
-
   /**
    * Main entry point for domain change detection
    * Returns risk signals only for genuine site purpose changes
@@ -604,9 +587,9 @@ export class FingerprintService {
     
     if (normalized1 === normalized2) return 0.95;
     
-    // Check for known brand variations
-    const variationSimilarity = this.checkBrandVariations(normalized1, normalized2);
-    if (variationSimilarity > 0) return variationSimilarity;
+    // REMOVED: Hardcoded brand variations check
+    // Reason: Only covered 4 major brands, creating bias against others
+    // Solution: Use generic word/token overlap instead
     
     // Check for partial matches (e.g., "Lux Cozi" vs "LuxCozi")
     if (normalized1.includes(normalized2) || normalized2.includes(normalized1)) {
@@ -633,34 +616,6 @@ export class FingerprintService {
     }
     
     return baseSimilarity;
-  }
-
-  /**
-   * Check for known brand variations
-   */
-  private static checkBrandVariations(brand1: string, brand2: string): number {
-    for (const [baseBrand, variations] of this.BRAND_VARIATIONS) {
-      const isBrand1Base = brand1.includes(baseBrand);
-      const isBrand2Base = brand2.includes(baseBrand);
-      
-      if (isBrand1Base && isBrand2Base) {
-        return 0.95; // Both are variations of the same base brand
-      }
-      
-      if (isBrand1Base) {
-        for (const variation of variations) {
-          if (brand2.includes(variation)) return 0.9;
-        }
-      }
-      
-      if (isBrand2Base) {
-        for (const variation of variations) {
-          if (brand1.includes(variation)) return 0.9;
-        }
-      }
-    }
-    
-    return 0;
   }
 
   /**
@@ -712,7 +667,10 @@ export class FingerprintService {
     }
 
     const signals: RiskSignal[] = [];
-    const isTrustedDomain = this.TRUSTED_DOMAINS.has(existing.domain);
+    
+    // Determine if domain is "established" based on heuristics (not hardcoded whitelist)
+    // Established domains warrant extra caution when they change
+    const isEstablishedDomain = existing.visitCount >= 3 || existing.confidence >= 0.8;
     const confidenceBonus = analysis.confidenceScore > 0.8 ? 10 : 0;
     
     // High-risk scenarios
@@ -772,16 +730,17 @@ export class FingerprintService {
       });
     }
 
-    // Add context-aware warnings for trusted domains
-    if (isTrustedDomain && analysis.riskLevel !== 'low') {
+    // Add context-aware warnings for frequently-visited domains
+    // (Generic - applies to ANY domain you visit regularly, not hardcoded list)
+    if (isEstablishedDomain && analysis.riskLevel !== 'low') {
       signals.push({
-        id: 'trusted-domain-change',
+        id: 'established-domain-change',
         score: 20,
-        reason: 'This is a trusted domain - unexpected changes may indicate security issues',
+        reason: 'This domain is familiar to you - unexpected changes may indicate security issues',
         severity: 'medium',
         category: 'security',
         source: 'heuristic',
-        details: `Trusted domain "${existing.domain}" showing unexpected changes. Verify you're on the correct site.`
+        details: `You've visited "${existing.domain}" ${existing.visitCount} times. Verify you're on the correct site.`
       });
     }
 

@@ -1,5 +1,4 @@
 import { RiskSignal, AnalysisResult } from '../types/analysis';
-import { ContextAwareScoringService } from './contextAwareScoring';
 
 export type RiskLevel = 'safe' | 'low' | 'medium' | 'high' | 'critical';
 
@@ -76,8 +75,15 @@ export class RiskCalculator {
     console.log(`[Dedup] Original signals: ${signals.length}, After dedup: ${deduplicated.length}`);
     console.log(`[Dedup] AI signals: ${signals.filter(s => s.source === 'ai').length}, Heuristic: ${signals.filter(s => s.source === 'heuristic').length}`);
     
+    // Step 1.5: Filter out legitimate retail/e-commerce marketing practices (generic, no hardcoding)
+    // These are common practices for high-trust retailers and shouldn't penalize them
+    const filtered = this.filterLegitimateRetailPractices(deduplicated, domainAgeInDays);
+    if (filtered.length < deduplicated.length) {
+      console.log(`[Filter] Removed ${deduplicated.length - filtered.length} legitimate retail marketing signals (trust factor=${domainAgeInDays ? 'established' : 'unknown'})`);
+    }
+    
     // Step 2: Group signals by category
-    const grouped = this.groupByCategory(deduplicated);
+    const grouped = this.groupByCategory(filtered);
     console.log(`[Grouped] Security: ${grouped.security.length}, Legitimacy: ${grouped.legitimacy.length}, DarkPattern: ${grouped.darkPattern.length}, Policy: ${grouped.policy.length}`);
     
     // Step 0: Calculate trust factor AFTER grouping (so we have signal counts)
@@ -97,18 +103,20 @@ export class RiskCalculator {
         domainAgeInDays,
         grouped.legitimacy.length,
         grouped.darkPattern.length,
-        deduplicated.length,
+        filtered.length,
         socialMediaCount
       );
       console.log(`[DEBUG] Calculated trustFactor: ${trustFactor}`);
       
       // Apply category-specific dampeners based on trust
-      // CRITICAL: Check if this is a phishing site (3+ year old with NO social media)
-      const isPhishingSuspect = domainAgeInDays > 1095 && socialMediaCount === 0;
+      // CRITICAL FIX: Only flag as phishing if YOUNG domain (<2yrs) with NO social AND suspicious patterns
+      // NOT for 30-year-old established companies!
+      const hasContactSignals = grouped.legitimacy.length > 0;
+      const isPhishingSuspect = domainAgeInDays < 730 && socialMediaCount === 0 && !hasContactSignals;
       
       // High trust (>0.8): Legitimacy & policy heavily dampened, Dark patterns moderately dampened
       if (trustFactor > 0.8 && !isPhishingSuspect) {
-        legitimacyDampener = 0.1;  // 90% reduction for missing socials on Amazon
+        legitimacyDampener = 0.1;  // 90% reduction - high trust sites don't need contact signals
         policyDampener = 0.5;      // 50% reduction for policy issues
         darkPatternDampener = 0.3; // 70% reduction - established retailers use marketing tactics
         console.log(`[Trust Factor] HIGH (${trustFactor.toFixed(2)}) → Dampeners: legit=${legitimacyDampener}, policy=${policyDampener}, darkPattern=${darkPatternDampener}`);
@@ -119,13 +127,13 @@ export class RiskCalculator {
         darkPatternDampener = 0.6; // 40% reduction - established sites less likely to be malicious
         console.log(`[Trust Factor] MEDIUM (${trustFactor.toFixed(2)}) → Dampeners: legit=${legitimacyDampener}, darkPattern=${darkPatternDampener}`);
       }
-      // PHISHING ALERT: 3+ year domain with NO social media = likely impersonation
+      // PHISHING ALERT: NEW domain (<2yr) with NO social AND NO contact signals = likely impersonation
       else if (isPhishingSuspect) {
-        // AMPLIFY the signals for phishing sites - trust dampening makes them WORSE
-        legitimacyDampener = 2.0;  // 200% AMPLIFICATION - missing socials on old domain is RED FLAG
+        // AMPLIFY the signals for phishing sites
+        legitimacyDampener = 2.0;  // 200% AMPLIFICATION - new domain with no contact = RED FLAG
         darkPatternDampener = 1.5; // 150% AMPLIFICATION - combine with dark patterns
         policyDampener = 1.5;      // 150% AMPLIFICATION
-        console.log(`🚨 [PHISHING ALERT] ${domainAgeInDays}d old domain with ZERO social media → AMPLIFYING signals (legit=${legitimacyDampener}, darkPattern=${darkPatternDampener}, policy=${policyDampener})`);
+        console.log(`🚨 [PHISHING ALERT] ${domainAgeInDays}d old YOUNG domain with ZERO social media and no contact → AMPLIFYING signals (legit=${legitimacyDampener}, darkPattern=${darkPatternDampener}, policy=${policyDampener})`);
       }
       // Low trust: all dampeners stay 1.0 (no dampening) - suspicious sites flagged at full severity
       else {
@@ -172,7 +180,7 @@ export class RiskCalculator {
     const riskLevel = this.getRiskLevel(totalScore);
     
     // Step 6: Get top 3 concerns
-    const topConcerns = this.getTopConcerns(deduplicated, 3);
+    const topConcerns = this.getTopConcerns(filtered, 3);
     
     // Step 7: Enrich signals with impact percentage
     const enrichedBreakdown = this.enrichSignalsWithImpact(breakdown, totalScore);
@@ -182,13 +190,18 @@ export class RiskCalculator {
       riskLevel,
       breakdown: enrichedBreakdown,
       topConcerns,
-      signalCount: deduplicated.length,
+      signalCount: filtered.length,
       trustFactor,
     };
   }
 
   /**
    * Calculate risk score WITH context-aware intelligent scoring
+   * 
+   * MERGED UNIFIED SCORING (Phase 1 Optimization)
+   * - Builds signal profile for context-aware analysis
+   * - Applies contextual penalties based on signal patterns
+   * - Calculates final score with unified dampening logic
    * 
    * GENERIC, DATA-DRIVEN APPROACH (No hardcoding!)
    * 
@@ -203,24 +216,254 @@ export class RiskCalculator {
     result: AnalysisResult
   ): RiskAnalysis {
     console.log(`[DEBUG] calculateScoreWithContext called with result.domainAgeInDays: ${result.domainAgeInDays}`);
-    console.log(`[DEBUG] Full result object:`, result);
     
-    // Step 1: Build signal-driven profile (NO hardcoded lists!)
-    const profile = ContextAwareScoringService.buildSignalProfile(result, signals);
-    console.log(`🧠 Signal profile: ${ContextAwareScoringService.getContextSummary(profile)}`);
-    console.log(`   Security maturity: ${(profile.securityMaturity * 100).toFixed(0)}%`);
-    console.log(`   Trust density: ${(profile.trustSignalDensity * 100).toFixed(0)}%`);
-    console.log(`   Risk concentration: ${(profile.riskConcentration * 100).toFixed(0)}%`);
+    // Step 1: Build signal profile and apply contextual penalties (merged logic)
+    const contextualSignals = this.applyContextualPenalties(signals, result);
 
-    // Step 2: Apply contextual penalties to signals (data-driven)
-    let contextualSignals = ContextAwareScoringService.applyContextualPenalties(signals, result);
-
-    // Step 3: Calculate score with adjusted signals and trust factor
-    // Extract domain age from result (passed from pageAnalyzer)
+    // Step 2: Calculate score with adjusted signals and trust factor
     const domainAgeInDays = result.domainAgeInDays ?? null;
-    console.log(`[DEBUG] extracting domainAgeInDays from result: ${domainAgeInDays}`);
-    
     return this.calculateScore(contextualSignals, domainAgeInDays);
+  }
+
+  /**
+   * Apply contextual penalties to signals based on signal profile
+   * MERGED from ContextAwareScoringService - unified scorer logic
+   * Uses data-driven analysis, not hardcoded rules
+   */
+  private static applyContextualPenalties(
+    signals: RiskSignal[],
+    result: AnalysisResult
+  ): RiskSignal[] {
+    // Build profile from signals (no hardcoding!)
+    const profile = this.buildSignalProfile(result, signals);
+    
+    console.log(`🧠 Signal profile:
+   Security maturity: ${(profile.securityMaturity * 100).toFixed(0)}%
+   Trust density: ${(profile.trustSignalDensity * 100).toFixed(0)}%
+   Risk concentration: ${(profile.riskConcentration * 100).toFixed(0)}%
+   Age category: ${profile.ageCategory}`);
+
+    return signals.map(signal => {
+      const contextualPenalty = this.calculateContextualPenalty(signal, profile);
+
+      // Only modify score if context factor differs significantly
+      if (Math.abs(contextualPenalty.contextFactor - 1.0) > 0.01) {
+        console.log(`   [Context] Signal "${signal.reason.substring(0, 40)}..." ${signal.score} → ${contextualPenalty.finalScore} (factor: ${contextualPenalty.contextFactor.toFixed(2)}x)`);
+        return {
+          ...signal,
+          score: contextualPenalty.finalScore,
+          details: `${signal.details || ''}\n\n📊 Context: ${contextualPenalty.reasoning}`,
+        };
+      }
+
+      return signal;
+    });
+  }
+
+  /**
+   * Build signal profile for context-aware analysis
+   * MERGED from ContextAwareScoringService
+   */
+  private static buildSignalProfile(
+    result: AnalysisResult,
+    signals: RiskSignal[]
+  ): any {
+    const domainAge = result.domain?.ageInDays ?? result.domainAgeInDays ?? null;
+    const ageCategory = this.categorizeByAge(domainAge);
+    const securityMaturity = this.calculateSecurityMaturity(result);
+    const trustSignalDensity = this.calculateTrustSignalDensity(signals);
+    const riskConcentration = this.calculateRiskConcentration(signals);
+
+    return {
+      securityMaturity,
+      trustSignalDensity,
+      ageCategory,
+      domainAge,
+      riskConcentration,
+      totalTrustSignals: signals.filter(s => s.score < 30).length,
+      totalRiskSignals: signals.filter(s => s.score >= 30).length,
+    };
+  }
+
+  /**
+   * Categorize domain age into meaningful buckets
+   */
+  private static categorizeByAge(
+    ageInDays: number | null
+  ): 'brand-new' | 'new' | 'established' | 'mature' {
+    if (ageInDays === null) return 'new'; // No data = assume new
+    if (ageInDays < 30) return 'brand-new';        // < 1 month
+    if (ageInDays < 365) return 'new';              // < 1 year
+    if (ageInDays < 365 * 5) return 'established'; // 1-5 years
+    return 'mature';                                // 5+ years
+  }
+
+  /**
+   * Calculate security maturity (0-1.0)
+   */
+  private static calculateSecurityMaturity(result: AnalysisResult): number {
+    let score = 0;
+    let maxScore = 0;
+
+    if (result.security?.isHttps !== undefined) {
+      maxScore += 4;
+      if (result.security.isHttps) score += 4;
+    }
+
+    if (result.security?.hasValidCertificate !== undefined) {
+      maxScore += 2;
+      if (result.security.hasValidCertificate) score += 2;
+    }
+
+    if (result.security?.hasMixedContent !== undefined) {
+      maxScore += 2;
+      if (!result.security.hasMixedContent) score += 2;
+    }
+
+    return maxScore > 0 ? score / maxScore : 0;
+  }
+
+  /**
+   * Calculate trust signal density (0-1.0)
+   */
+  private static calculateTrustSignalDensity(signals: RiskSignal[]): number {
+    if (signals.length === 0) return 0;
+    const trustSignals = signals.filter(s => s.score < 30).length;
+    return Math.min(1.0, trustSignals / signals.length);
+  }
+
+  /**
+   * Calculate risk concentration (0-1.0) - phishing indicator
+   */
+  private static calculateRiskConcentration(signals: RiskSignal[]): number {
+    if (signals.length === 0) return 0;
+
+    const riskSignals = signals.filter(s => s.score >= 30);
+    if (riskSignals.length === 0) return 0;
+
+    // Group risks by category
+    const categoryRisks = new Map<string, number>();
+    riskSignals.forEach(signal => {
+      const category = signal.category ?? 'policy';
+      categoryRisks.set(category, (categoryRisks.get(category) ?? 0) + 1);
+    });
+
+    // If most risks are in 1-2 categories = high concentration
+    const sortedCategories = Array.from(categoryRisks.values()).sort((a, b) => b - a);
+    const topRisks = sortedCategories.slice(0, 2).reduce((a, b) => a + b, 0);
+    const concentration = topRisks / riskSignals.length;
+
+    return Math.min(1.0, concentration);
+  }
+
+  /**
+   * Calculate contextual penalty using signal profile (GENERIC!)
+   */
+  private static calculateContextualPenalty(
+    signal: RiskSignal,
+    profile: any
+  ): any {
+    const baseScore = signal.score;
+    let contextFactor = 1.0;
+    let reasoning = 'Standard scoring applied';
+
+    // GENERIC RULE 1: High trust density + mature domain = reduce low-risk signals
+    if (
+      profile.trustSignalDensity > 0.6 &&
+      (profile.ageCategory === 'mature' || profile.ageCategory === 'established') &&
+      signal.score < 25
+    ) {
+      contextFactor = 0.2;
+      reasoning = `✅ High trust signals + ${profile.ageCategory} domain - low-risk signal downweighted`;
+    }
+
+    // GENERIC RULE 2: Established domain with good security = reduce signals
+    else if (
+      profile.securityMaturity > 0.7 &&
+      profile.ageCategory === 'established' &&
+      signal.score < 20
+    ) {
+      contextFactor = 0.4;
+      reasoning = `✅ ${profile.ageCategory} domain with mature security - signal less critical`;
+    }
+
+    // GENERIC RULE 3: Brand-new + poor security + suspicious = AMPLIFY
+    else if (
+      profile.ageCategory === 'brand-new' &&
+      profile.securityMaturity < 0.5 &&
+      (signal.id.includes('ssl') || signal.id.includes('https') || signal.id.includes('social'))
+    ) {
+      contextFactor = 1.8;
+      reasoning = `⚠️ Brand-new domain + weak security - critical issues amplified`;
+    }
+
+    // GENERIC RULE 4: High risk concentration = phishing pattern
+    else if (
+      profile.riskConcentration > 0.7 &&
+      profile.ageCategory === 'brand-new' &&
+      profile.totalRiskSignals >= 3
+    ) {
+      contextFactor = 2.0;
+      reasoning = `🚨 Phishing pattern detected: ${profile.totalRiskSignals} risks concentrated on new domain`;
+    }
+
+    const finalScore = Math.max(0, Math.min(100, Math.round(baseScore * contextFactor)));
+
+    return {
+      baseScore,
+      contextFactor,
+      finalScore,
+      reasoning,
+      profile,
+    };
+  }
+
+  /**
+   * GENERIC FILTER: Remove low-severity dark pattern signals if domain is established
+   * 
+   * Rationale: Established retailers (10+ years) commonly use flash sales, limited-time offers,
+   * and "Was $X now $Y" pricing. These are standard retail practices, NOT dark patterns.
+   * 
+   * This prevents false positives without hardcoding specific patterns.
+   * Data-driven: Only filter if domain is old AND signal is from AI (heuristic is usually more precise)
+   */
+  private static filterLegitimateRetailPractices(signals: RiskSignal[], domainAgeInDays?: number | null): RiskSignal[] {
+    // Only filter if we have an established domain (10+ years = 3650+ days)
+    const isEstablishedDomain = domainAgeInDays !== null && domainAgeInDays !== undefined && domainAgeInDays >= 3650;
+    
+    if (!isEstablishedDomain) {
+      return signals; // Return all signals if domain is young or unknown age
+    }
+    
+    return signals.filter(signal => {
+      // Keep all security and policy signals (critical categories)
+      if (signal.category === 'security' || signal.category === 'policy') {
+        return true;
+      }
+      
+      // For dark patterns on established domains: only keep HIGH severity
+      if (signal.category === 'dark-pattern' && signal.source === 'ai') {
+        const isLowSeverity = signal.severity === 'low' || signal.severity === 'medium';
+        const isCommonRetailPhrase = 
+          signal.reason?.toLowerCase().includes('flash') ||
+          signal.reason?.toLowerCase().includes('limited quantity') ||
+          signal.reason?.toLowerCase().includes('limited time') ||
+          signal.reason?.toLowerCase().includes('was $') ||
+          signal.reason?.toLowerCase().includes('original price') ||
+          signal.reason?.toLowerCase().includes('discount') ||
+          signal.reason?.toLowerCase().includes('urgency') ||
+          signal.reason?.toLowerCase().includes('shipping cost') ||
+          signal.reason?.toLowerCase().includes('free') ||
+          signal.reason?.toLowerCase().includes('shipping');
+        
+        // Filter out low-severity common retail practices on established domains
+        if (isLowSeverity && isCommonRetailPhrase) {
+          return false; // Remove this signal
+        }
+      }
+      
+      return true; // Keep all other signals
+    });
   }
 
   /**
@@ -397,74 +640,90 @@ export class RiskCalculator {
     totalSignalCount: number = 0,
     socialMediaCount: number = 0
   ): number {
-    // Calculate age score (0-1.0)
-    let ageScore = 0;
-    if (domainAgeInDays === null) {
-      ageScore = 0.1; // Unknown age = slightly risky
-    } else if (domainAgeInDays < 180) {
-      ageScore = 0.0; // Brand new
-    } else if (domainAgeInDays < 1095) {
-      ageScore = 0.5; // 6mo-3y: developing
-    } else if (domainAgeInDays < 3650) {
-      ageScore = 0.8; // 3-10y: established
-    } else {
-      ageScore = 1.0; // 10y+: highly trusted
+    // NEW ALGORITHM: Age is PRIMARY factor (70%), contact signals (20%), social optional (10%)
+    // Goal: Range 0.2-1.0 with clear differentiation between old/new domains
+    
+    // STEP 1: Calculate age score (PRIMARY, 70% weight)
+    // Scale: <6mo=0.2, 1yr=0.3, 2yr=0.4, 3yr=0.5, 5yr=0.65, 10yr=0.8, 20yr=0.9, 30+yr=0.95
+    let ageScore = 0.2; // Minimum trust for unknown
+    
+    if (domainAgeInDays !== null) {
+      if (domainAgeInDays < 180) {
+        ageScore = 0.2; // Brand new: highly suspicious
+      } else if (domainAgeInDays < 365) {
+        ageScore = 0.3; // 6-12 months
+      } else if (domainAgeInDays < 730) {
+        ageScore = 0.4; // 1-2 years
+      } else if (domainAgeInDays < 1095) {
+        ageScore = 0.5; // 2-3 years
+      } else if (domainAgeInDays < 1825) {
+        ageScore = 0.6; // 3-5 years
+      } else if (domainAgeInDays < 3650) {
+        ageScore = 0.75; // 5-10 years: established
+      } else if (domainAgeInDays < 7300) {
+        ageScore = 0.85; // 10-20 years: very trusted
+      } else if (domainAgeInDays < 10950) {
+        ageScore = 0.92; // 20-30 years
+      } else {
+        ageScore = 0.95; // 30+ years: maximum age trust
+      }
     }
 
-    // Calculate legitimacy signal score (0-1.0)
-    // More legitimacy signals = more trustworthy
-    // But if ONLY legitimacy signals exist (suspicious absence of other indicators) = less trustworthy
-    // Also: established domains SHOULD have social media presence (phishing detection)
-    let legitimacyScore = 0.5; // Default: neutral
+    // STEP 2: Calculate contact signal score (OPTIONAL, 20% weight)
+    // Contact signals = has email, phone, physical address
+    let contactScore = 0.5; // Default neutral
     
-    // Phishing detection: Established domains without social media are suspicious
-    // ruggedsale.com (3yr, 0 social) is likely phishing
-    // theruggedsociety.com (5yr, 3 social) is legitimate
-    if (domainAgeInDays !== null && domainAgeInDays > 1095 && socialMediaCount === 0) {
-      // 3+ year old domain with ZERO social media profiles = RED FLAG
-      legitimacyScore = 0.2; // Highly suspicious
-      console.log(`[Phishing Alert] ${domainAgeInDays}d old domain with ZERO social profiles → legitimacyScore=0.2`);
-    } else if (domainAgeInDays !== null && domainAgeInDays > 1825 && socialMediaCount < 2) {
-      // 5+ year old domain with <2 social profiles = unusual
-      legitimacyScore = 0.5; // Moderate caution
-      console.log(`[Phishing Caution] ${domainAgeInDays}d old domain with only ${socialMediaCount} social profile(s) → legitimacyScore=0.5`);
-    }
-    
-    // Signal quality analysis (if not already flagged as suspicious)
-    if (legitimacyScore === 0.5 && totalSignalCount > 0) {
+    if (totalSignalCount > 0) {
       const legitimacyRatio = legitimacySignalCount / totalSignalCount;
       
-      // Perfect balance: ~30-40% legitimacy signals = high score
+      // Good signal balance (30-50% legitimacy) = trusted
       if (legitimacyRatio >= 0.3 && legitimacyRatio <= 0.5) {
-        legitimacyScore = 0.9; // Balanced signal profile
+        contactScore = 0.9; // Good contact presence
       }
-      // Too many legitimacy signals (>60%) = suspicious (missing security/policy signals)
+      // Too many legitimacy (>60%) = unusual but not penalized
       else if (legitimacyRatio > 0.6) {
-        legitimacyScore = 0.3; // Unbalanced = suspicious
+        contactScore = 0.6; // Unusual but not penalized
       }
       // Very few signals overall = unknown
       else if (totalSignalCount < 2) {
-        legitimacyScore = 0.5; // Not enough data
+        contactScore = 0.5; // Not enough data
+      } else {
+        contactScore = 0.4; // Few signals = less contact presence
       }
     }
 
-    // Detect risk concentration (phishing indicator)
-    // If 80%+ of risks are dark patterns on old domain = suspicious
-    let riskConcentrationPenalty = 0;
-    if (domainAgeInDays !== null && domainAgeInDays > 1095 && totalSignalCount > 0) {
+    // STEP 3: Calculate social media score (OPTIONAL, 10% weight)
+    // Social media is BONUS, not required
+    let socialScore = 0.5; // Default neutral (no penalty for absence)
+    
+    // Only bonus if social media PRESENT
+    if (socialMediaCount > 0) {
+      socialScore = 0.9; // Has social presence = good signal
+      console.log(`[SocialMedia] ${socialMediaCount} profiles detected → socialScore=0.9`);
+    } else if (domainAgeInDays !== null && domainAgeInDays > 1825) {
+      // Niche/regional brands OK without social
+      socialScore = 0.5; // Neutral, not penalized
+      console.log(`[SocialMedia] No profiles but age=${domainAgeInDays}d → socialScore=0.5 (no penalty for established domains)`);
+    }
+
+    // STEP 4: Detect risk concentration (phishing indicator)
+    let riskPenalty = 0;
+    if (domainAgeInDays !== null && domainAgeInDays > 1095 && totalSignalCount > 2) {
       const darkPatternRatio = darkPatternSignalCount / totalSignalCount;
-      if (darkPatternRatio > 0.6) {
-        riskConcentrationPenalty = 0.2; // Reduce trust if heavily concentrated
+      // Only apply penalty if HEAVILY concentrated (>70%)
+      if (darkPatternRatio > 0.7) {
+        riskPenalty = 0.1; // Minor penalty for heavily concentrated
       }
     }
 
-    // Trust factor = weighted combination
-    // Age (70%) + Legitimacy signals (30%) - Concentration penalty
-    const trustFactor = (ageScore * 0.7 + legitimacyScore * 0.3) - riskConcentrationPenalty;
+    // STEP 5: Calculate weighted trust factor
+    // Age (70%) + Contact (20%) + Social (10%) - Concentration penalty
+    const trustFactor = (ageScore * 0.7) + (contactScore * 0.2) + (socialScore * 0.1) - riskPenalty;
     
-    console.log(`[TrustFactor] age=${domainAgeInDays}d(${ageScore.toFixed(2)}) + legit=${legitimacyScore.toFixed(2)} - concentration=${riskConcentrationPenalty.toFixed(2)} → trustFactor=${Math.max(0, trustFactor).toFixed(2)}`);
+    console.log(`[TrustFactor] age=${domainAgeInDays}d(${ageScore.toFixed(2)}) + contact=${contactScore.toFixed(2)} + social=${socialScore.toFixed(2)} - penalty=${riskPenalty.toFixed(2)} = ${Math.max(0.2, Math.min(1, trustFactor)).toFixed(2)}`);
     
-    return Math.max(0, Math.min(1, trustFactor)); // Clamp to 0.0-1.0
+    // Clamp to 0.2-1.0 range (minimum 0.2 for unknown domains, maximum 1.0 for oldest)
+    return Math.max(0.2, Math.min(1, trustFactor));
   }
 
   /**

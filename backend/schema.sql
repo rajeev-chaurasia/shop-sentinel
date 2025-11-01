@@ -31,4 +31,3 @@ CREATE INDEX IF NOT EXISTS idx_jobs_session_id ON jobs(session_id);
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at);
 CREATE INDEX IF NOT EXISTS idx_jobs_url_page_type ON jobs(url, page_type);
 CREATE INDEX IF NOT EXISTS idx_jobs_url_page_type_status ON jobs(url, page_type, status) WHERE status = 'completed';
-```
