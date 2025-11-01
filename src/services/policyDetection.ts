@@ -170,6 +170,28 @@ export class PolicyDetectionService {
     let policyScore = 0;
     const signals: string[] = [];
 
+    const isHomepage = path === '/' || path === '' || path === '/index.html' || path === '/home';
+    if (isHomepage) {
+      signals.push('homepage-detected');
+      return { score: 0, signals };
+    }
+
+    const homepageIndicators = [
+      'featured products', 'trending now', 'shop now', 'new arrivals',
+      'best sellers', 'popular items', 'top rated', 'deals of the day',
+      'hero banner', 'welcome to', 'browse categories', 'shop by category',
+      'continue shopping deals', 'keep shopping for', 'recently viewed'
+    ];
+    
+    const homepageIndicatorCount = homepageIndicators.filter(indicator => 
+      content.includes(indicator)
+    ).length;
+    
+    if (homepageIndicatorCount >= 3) {
+      signals.push('homepage-content-detected');
+      return { score: 0, signals };
+    }
+
     const productPageIndicators = [
       'add to cart', 'add to bag', 'buy now', 'shop now', 'purchase',
       'in stock', 'out of stock', 'quantity', 'color:', 'size:',
