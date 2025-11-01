@@ -21,69 +21,83 @@ Shop Sentinel addresses these challenges by providing instant, AI-powered analys
 
 #### Ready to Analyze
 ![Ready to Analyze](docs/screenshots/ready_to_analyze.png)
+
 *The Shop Sentinel extension popup, showing it's ready to scan the current page for security issues, dark patterns, and policy concerns. Users can click "Scan Page" to begin instant analysis.*
 
 #### Analysis in Progress - Real-Time AI Processing
 ![Analysis in Progress](docs/screenshots/real_time_analysis.png)
+
 *Real-time progress tracking showing the extension analyzing a website in phases: AI initialization → Dark pattern detection → Domain analysis → Legitimacy checks. Users can see exactly what's being checked, with progress indicators like "Domain Analysis" at 42% and "Analyzing for brand impersonation..."*
 
 ### Risk Assessment & Overview
 
 #### High Risk Detection - Suspicious Site Warning
 ![High Risk Detection](docs/screenshots/high_risk.png)
+
 *Shop Sentinel flags a suspicious e-commerce site (ruggedale.com) with a high risk score of 79/100. The extension detects multiple critical issues including brand impersonation (85% confidence that it mimics 'ruggedsociety.com'), missing contact information, and other legitimacy concerns. Users see clear warnings before making purchases.*
 
 #### Safe Site Verification - Trustworthy Shopping
 ![Safe Site Verification](docs/screenshots/Safe_website.png)
+
 *For legitimate sites like Amazon, Shop Sentinel confirms safety with a low risk score (12/100) and green "Safe" status. The extension verifies security (HTTPS), domain authenticity, and shows "AI Analysis: 0 signals detected", giving users confidence to shop securely.*
 
 #### Overview Dashboard - Complete Risk Summary
 ![Overview Tab](docs/screenshots/cm_analysis1.png)
 ![Overview Tab](docs/screenshots/cm_analysis2.png)
+
 *The main dashboard showing comprehensive risk assessment: security status (HTTPS verified), AI analysis summary (3 signals detected), and top issues with severity indicators. Users get an instant overview of site safety before engaging with the website.*
 
 ### Issue Detection & Dark Patterns
 
 #### Issues Tab - Detailed Problem Breakdown
 ![Issues Tab](docs/screenshots/issues.png)
+
 *Complete list of detected issues including invalid social media profiles (High severity), missing contact information (Medium severity), and security vulnerabilities. Each issue includes severity badges, detailed explanations, and analysis type (Heuristic or AI Detection).*
 
 #### Dark Pattern Detection - Manipulative Tactics
 ![Dark Patterns Detected](docs/screenshots/hidden_cost.png)
+
 *The extension identifies manipulative UI patterns like "Limited quantity messaging may create a false sense of urgency" and "Shipping costs are not immediately visible." AI analysis explains how these tactics pressure users into rushed decisions or hide important information until checkout.*
 
 #### Hidden Costs & Urgency Warnings
 ![Hidden Costs Warning](docs/screenshots/limited.png)
+
 *Shop Sentinel detects multiple dark patterns on ruggedale.com: limited-time offers creating false urgency ("INCREDIBLE PRICE", "discounted prices") and potential hidden costs in the checkout process. Both issues are flagged with "Low" severity warnings and attributed to AI Detection.*
 
 ### Policy Analysis & AI Summarization
 
 #### Policy Detection - Available Policies
 ![Policy Detection](docs/screenshots/policies.png)
+
 *The "Policies" tab shows detected policy documents on an e-commerce site. Shop Sentinel identifies Return/Refund Policy, Shipping Policy, and Privacy Policy, each with a "View →" button for detailed analysis. This feature prepares policies for AI-powered summarization.*
 
 #### Policy Analysis - AI Summarization in Action (Walmart)
 ![Policy Analysis](docs/screenshots/summary.png)
+
 *When visiting a policy page (Walmart's Customer Privacy Center), Shop Sentinel's AI analyzes and summarizes complex terms. The extension flags "Policy Quality Concerns" (minimal content, legitimacy score 70/100) and provides an AI-generated summary highlighting key points about privacy rights, data management, and regional variations.*
 
 #### Policy Summary with Quality Assessment (Flipkart)
 ![Policy Summary Detailed](docs/screenshots/warnign_policy.png)
+
 *Another example showing AI-powered policy analysis on Flipkart's privacy policy. The extension provides a detailed legitimacy score (78/100), warns about minimal content (< 380 words), and generates bullet-point summaries of key terms and conditions, making complex policies easy to understand.*
 
 ### Security & Phishing Prevention
 
 #### Phishing Detection - Brand Impersonation
 ![Phishing Detection](docs/screenshots/impersonate.png)
+
 *Shop Sentinel's AI detects domain impersonation attempts. On ruggedale.com, the extension identifies that the domain "appears to impersonate 'ruggedsociety.com' (85% confidence)" and flags missing critical contact information. This protects users from fraudulent sites mimicking legitimate brands.*
 
 #### Multiple Security Issues Detected
 ![Security Issues](docs/screenshots/Security.png)
+
 *The Issues tab displaying multiple security and legitimacy concerns: low social media validation rate (0%), missing Terms of Service policy, and DNSSEC security vulnerability. Each issue includes severity levels (Medium/Low) and clear explanations of the risk.*
 
 ### Settings & Configuration
 
 #### Analysis Settings Panel
 ![Settings Panel](docs/screenshots/setting.png)
+
 *The Settings panel allows users to configure protection features. "Smart Scam Detection" toggle enables AI-powered analysis to find hidden tricks and fake reviews. Additional preferences include theme selection (Light/Dark/Auto) and risk alert notifications for risky sites.*
 
 ## ✨ Key Features
