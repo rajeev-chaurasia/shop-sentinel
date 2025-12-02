@@ -315,31 +315,6 @@ shop-sentinel/
 5. **Risk Calculation**: Combines all signals into 0-100 risk score
 6. **Results Display**: Shows risk level, issues, and recommendations
 
-## 📸 How to Capture Screenshots
-
-To add screenshots demonstrating scam prevention:
-
-1. **Create directory**: `docs/screenshots/`
-2. **Capture these scenarios**:
-
-### Recommended Screenshot Scenarios
-
-- **high-risk-detection.png** - Show a suspicious site with red risk meter, multiple warnings
-- **dark-patterns-detected.png** - Extension highlighting fake urgency or countdown timers on a product page
-- **policy-summary.png** - Policy page with AI-generated summary showing key terms and red flags
-- **safe-site.png** - Legitimate site (Amazon/eBay) with green indicators showing it's trustworthy
-- **analysis-workflow.png** - Progress view showing AI analyzing: "Checking security → Detecting dark patterns → Verifying domain"
-- **phishing-detection.png** - Domain impersonation warning (e.g., "amaz0n.com" flagged as suspicious)
-- **hidden-costs.png** - Warning about hidden fees or restocking charges found in policies
-- **quick-scan.png** - Clean overview of a scan result with risk score and top issues
-
-3. **Tips for best screenshots**:
-   - Show real e-commerce sites (with permission or blurred details)
-   - Capture the extension popup (420px width)
-   - Show both safe and risky examples
-   - Include visible risk scores and warnings
-   - Demonstrate AI features (look for "AI Analysis: X signals detected" badge)
-
 ## 🧪 Testing Instructions
 
 To test Shop Sentinel:
